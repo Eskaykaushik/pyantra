@@ -4,6 +4,7 @@ from pyantra.checkpoint import Checkpoint, CheckpointStore, MemoryCheckpointStor
 from pyantra.graph.edge import END
 from pyantra.graph.graph import Graph
 from pyantra.graph.node import Node, NodeConfig
+from pyantra.llm import LLM, LLMResponse, Message, MockLLM, Usage, UsageTracker
 from pyantra.reliability import (
     Backoff,
     CircuitBreaker,
@@ -41,8 +42,12 @@ __all__ = [
     "GraphCompileError",
     "GraphExecutionError",
     "InvalidRouteError",
+    "LLM",
+    "LLMResponse",
     "MaxIterationsError",
     "MemoryCheckpointStore",
+    "Message",
+    "MockLLM",
     "Node",
     "NodeConfig",
     "NodeExecutionError",
@@ -53,6 +58,8 @@ __all__ = [
     "Run",
     "RunEvent",
     "RunStatus",
+    "Usage",
+    "UsageTracker",
     "compute_delay",
     "is_retryable",
     "non_retryable",

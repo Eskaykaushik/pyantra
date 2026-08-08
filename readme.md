@@ -25,6 +25,7 @@ Pyantra is a Python framework for building AI agent workflows as **typed graphs 
 - **Reliability first-class** — per-node retry with backoff, timeouts, and circuit breakers.
 - **Checkpoints** — durable snapshots that let failed runs resume where they left off.
 - **Structured observability** — every run produces a rich event trace.
+- **LLM abstraction** — a dependency-free provider interface with built-in token/cost tracking.
 - **Sync + async** — one traversal engine exposed through both `run()` and `arun()`.
 - **Zero dependencies** — pure Python standard library. No databases, no services.
 
@@ -198,6 +199,32 @@ graph.add_node(
 
 ---
 
+## LLMs
+
+Pyantra ships a dependency-free provider abstraction (`LLM`) plus `Message`,
+`Usage`, and `LLMResponse` value types. Any model adapter implements
+`generate()` / `agenerate()`; providers (OpenAI, Anthropic, …) can live as
+extras. Cost and token usage is aggregated per run with `UsageTracker`, and
+`MockLLM` provides scripted responses for tests.
+
+```python
+from pyantra import Message, MockLLM, UsageTracker
+
+llm = MockLLM(responses=["summarized"], input_tokens=3, output_tokens=2)
+tracker = UsageTracker()
+
+def summarize(state: State) -> State:
+    resp = llm.generate([Message(role="user", content=state.prompt)])
+    tracker.add(resp.usage)
+    state.summary = resp.content
+    return state
+```
+
+`tracker.total` reports aggregate input/output/cache tokens and cost. See
+[`docs/llm.md`](docs/llm.md) for the design and roadmap.
+
+---
+
 ## Checkpoints and resume
 
 Pass a checkpoint store to `run()` and a run can resume from its last
@@ -294,8 +321,8 @@ This repository uses [conventional commits](https://www.conventionalcommits.org/
 
 ## Roadmap
 
-- Context management with token budgets and compression
-- LLM usage tracking, caching, and model tiering
+- Automatic LLM usage capture with per-run budgets and compression
+- LLM caching and model tiering
 - Multi-agent delegation and scoped handoffs
 - Human-in-the-loop pause/resume
 - Deterministic replay and trace-based regression testing
