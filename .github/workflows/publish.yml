@@ -11,13 +11,18 @@ jobs:
   build:
     name: Build distributions
     runs-on: ubuntu-latest
+    env:
+      RELEASE_PACKAGES: "pyantra"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - name: Build all workspace packages
-        run: uv build --all-packages --out-dir dist
+      - name: Build release packages
+        run: |
+          for pkg in $RELEASE_PACKAGES; do
+            uv build --package "$pkg" --out-dir dist
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: dist

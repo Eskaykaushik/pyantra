@@ -471,9 +471,12 @@ This repository uses [conventional commits](https://www.conventionalcommits.org/
 All packages share one version and one tag. To release:
 
 1. Bump `version` in `pyproject.toml` and every `packages/*/pyproject.toml`.
-2. Commit, then tag with `v<version>` (e.g. `v0.4.0`) and push. The tag
-   triggers the `Publish to PyPI` workflow, which builds every workspace
-   package and uploads them to PyPI.
+2. Add each package you want shipped to `RELEASE_PACKAGES` in
+   `.github/workflows/publish.yml` (placeholders stay out until they have
+   real content).
+3. Commit, then tag with `v<version>` (e.g. `v0.4.0`) and push. The tag
+   triggers the `Publish to PyPI` workflow, which builds every package in
+   `RELEASE_PACKAGES` and uploads them to PyPI.
 
 ---
 
