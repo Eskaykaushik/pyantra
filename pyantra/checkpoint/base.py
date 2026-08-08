@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Generic
+from typing import Any, Generic
 
 from pyantra.runtime.run import RunEvent
 from pyantra.state.state import StateT
@@ -12,16 +12,18 @@ from pyantra.state.state import StateT
 
 @dataclass
 class Checkpoint(Generic[StateT]):
-    """A snapshot of a run, used to resume after a failure.
+    """A snapshot of a run, used to resume after a failure or interrupt.
 
     ``resume_at`` is the name of the node to (re-)execute on resume — the node
-    that was executing when the run failed.
+    that was executing when the run failed or paused. ``interrupts`` holds
+    ``(node, payload)`` pairs for pending human-in-the-loop interruptions.
     """
 
     run_id: str
     resume_at: str | None
     state: StateT
     events: list[RunEvent] = field(default_factory=list)
+    interrupts: list[tuple[str, Any]] = field(default_factory=list)
 
 
 class CheckpointStore(ABC, Generic[StateT]):

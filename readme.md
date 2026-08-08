@@ -21,9 +21,12 @@ Pyantra is a Python framework for building AI agent workflows as **typed graphs 
 ## Features
 
 - **Typed workflows** — nodes flow state through the graph and are type-checked end to end.
+- **State merging** — per-field reducers (`Annotated[list[T], reducer]`) and partial updates, so concurrent and sequential nodes can contribute to shared state safely.
 - **Compile-time validation** — malformed graphs fail early with clear errors, not at runtime.
+- **Parallel fan-out** — nodes run concurrently on isolated state copies and merge back with reducers.
 - **Reliability first-class** — per-node retry with backoff, timeouts, and circuit breakers.
-- **Checkpoints** — durable snapshots that let failed runs resume where they left off.
+- **Checkpoints** — durable snapshots that let failed runs resume where they left off, backed by memory or SQLite.
+- **Human-in-the-loop** — `interrupt()` pauses a run for input; `resume()` continues it.
 - **Structured observability** — every run produces a rich event trace.
 - **LLM abstraction** — a dependency-free provider interface with built-in token/cost tracking.
 - **Sync + async** — one traversal engine exposed through both `run()` and `arun()`.
@@ -121,6 +124,49 @@ from pyantra import END
 graph.add_edge(final_node, END)
 ```
 
+### State merging and reducers
+
+Annotate a state field with a reducer to control how updates combine instead
+of overwriting:
+
+```python
+from typing import Annotated, operator
+from dataclasses import dataclass, field
+
+@dataclass
+class State:
+    messages: Annotated[list[str], operator.add] = field(default_factory=list)
+
+@graph.node
+def record(state: State) -> dict[str, list[str]]:
+    return {"messages": ["hello"]}
+```
+
+Nodes may return:
+
+* `None` — the node mutated state in place (reducers do not apply).
+* the state type — merged field by field; annotated fields are reduced
+  against the current values, all others replace.
+* a `dict` of field updates — the same merge, applied per key.
+
+Any `(current, update) -> new` callable works as a reducer; `operator.add`
+on lists, `operator.or_` on sets, and dict merges are common. State merge
+works for sequential runs and is what makes parallel fan-out safe.
+
+### Parallel execution
+
+Fan out from a node to several branches that run concurrently, then continue
+at a join node (or end):
+
+```python
+graph.set_entry_point(ingest)
+graph.add_parallel_edges(ingest, summarize, classify, join=combine)
+```
+
+Each branch executes on an isolated copy of the current state. Results merge
+back with the field reducers — unannotated fields are last-writer-wins, so use
+reducers for shared fields you want to accumulate.
+
 ### Async execution
 
 The exact same graph runs asynchronously:
@@ -179,6 +225,22 @@ class ValidationError(Exception):
 def fetch(state: State) -> State:
     raise ValidationError("bad request")
 ```
+
+### Retry only certain errors
+
+By default any retryable failure is retried. Use `retry_on` to restrict retries
+to specific exception types — anything else fails immediately. This pairs well
+with the `@non_retryable` marker, which always wins:
+
+```python
+fetch.config = NodeConfig(
+    retries=4,
+    retry_on=(ConnectionError, TimeoutError),  # only retry these
+)
+```
+
+A single type is accepted as shorthand: `retry_on=ConnectionError`. Timeouts
+count as retryable failures, so `retry_on=(TimeoutError,)` retries on timeouts.
 
 ### Circuit breakers
 
@@ -243,7 +305,47 @@ second = app.run(state, checkpointer=store, run_id="order-123")
 ```
 
 `CheckpointStore` is an abstract interface; in-memory storage ships by default
-and durable backends (SQLite, Postgres, Redis) can be added behind the same API.
+and a durable `SQLiteCheckpointStore` is built in:
+
+```python
+from pyantra import SQLiteCheckpointStore
+
+store = SQLiteCheckpointStore("checkpoints.db")
+```
+
+State, events, and pending interrupts are serialized with `pickle`, so
+`SQLiteCheckpointStore` survives process restarts. Additional backends
+(Postgres, Redis) can be added behind the same interface.
+
+---
+
+## Human-in-the-loop
+
+Call `interrupt()` from a node to pause a run and request input. The run
+pauses with `RunStatus.PAUSED`, its payload lands on `run.interrupt`, and the
+state is checkpointed. Resume with `app.resume(...)` — the call to
+`interrupt()` then returns the value you provided:
+
+```python
+from pyantra import interrupt
+
+@graph.node
+def review(state: State) -> State:
+    decision = interrupt({"question": "approve this change?", "draft": state.draft})
+    state.decision = decision
+    return state
+
+run = app.run(state, checkpointer=store, run_id="review-7")
+assert run.status == RunStatus.PAUSED
+print(run.interrupt)          # {"question": "...", "draft": ...}
+
+resumed = app.resume("review-7", "approved", checkpointer=store)
+assert resumed.status == RunStatus.COMPLETED
+```
+
+`interrupt()` raises a `BaseException`-derived signal, so a node's own
+`except Exception` cannot swallow it. Multiple sequential interruptions in one
+run are supported; each `resume()` answers the most recent one.
 
 ---
 
@@ -256,20 +358,22 @@ parsing required:
 result = app.run(state)
 
 result.run_id      # unique id for the run
-result.status      # RunStatus (pending, running, completed, failed, ...)
+result.status      # RunStatus (pending, running, completed, failed, paused, ...)
 result.state       # final (or last known) state
 result.events      # ordered list of RunEvent
 result.error       # human-readable failure message, when failed
 result.exception   # the underlying exception, when failed
+result.interrupt   # the human-in-the-loop payload, when paused
 ```
 
 Example events:
 
 ```
-run.started        node.started      node.attempt.failed
-run.completed      node.completed    node.attempt.timeout
-run.failed         node.failed       node.retrying
-run.resumed        edge.selected
+run.started        node.started        node.attempt.failed
+run.completed      node.completed      node.attempt.timeout
+run.failed         node.failed         node.retrying
+run.paused         node.interrupted    edge.selected
+run.resumed
 ```
 
 ---
@@ -301,6 +405,7 @@ End-to-end runnable examples live in [`examples/`](examples/):
 ```bash
 python examples/basic_workflow.py
 python examples/reliability_workflow.py
+python examples/advanced_workflow.py   # reducers, parallel, human-in-the-loop
 ```
 
 ---
@@ -324,7 +429,7 @@ This repository uses [conventional commits](https://www.conventionalcommits.org/
 - Automatic LLM usage capture with per-run budgets and compression
 - LLM caching and model tiering
 - Multi-agent delegation and scoped handoffs
-- Human-in-the-loop pause/resume
+- `interrupt()` defaults and tool/approval-specific helpers
 - Deterministic replay and trace-based regression testing
 
 ---

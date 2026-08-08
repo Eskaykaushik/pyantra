@@ -7,9 +7,11 @@ from typing import Generic, TypeAlias, overload
 
 from pyantra.graph.compiler import CompiledGraph
 from pyantra.graph.conditional import ConditionalEdge, RouterFn
-from pyantra.graph.edge import Edge, _End
+from pyantra.graph.edge import END, Edge, _End
 from pyantra.graph.node import Node, NodeConfig, NodeFn
+from pyantra.graph.parallel import ParallelEdge
 from pyantra.runtime.errors import GraphCompileError
+from pyantra.state.reducers import Reducer, extract_reducers
 from pyantra.state.state import StateT
 
 NodeLike: TypeAlias = Node[StateT] | str
@@ -43,11 +45,18 @@ class Graph(Generic[StateT]):
         self._nodes: dict[str, Node[StateT]] = {}
         self._edges: list[Edge] = []
         self._conditional_edges: list[ConditionalEdge[StateT]] = []
+        self._parallel_edges: list[ParallelEdge] = []
         self._entry_point: str | None = None
+        self._reducers = extract_reducers(state_type)
 
     @property
     def state_type(self) -> type[StateT]:
         return self._state_type
+
+    @property
+    def reducers(self) -> dict[str, Reducer]:
+        """Field reducers extracted from ``Annotated`` metadata on the state type."""
+        return dict(self._reducers)
 
     @property
     def entry_point(self) -> str | None:
@@ -64,6 +73,10 @@ class Graph(Generic[StateT]):
     @property
     def conditional_edges(self) -> list[ConditionalEdge[StateT]]:
         return list(self._conditional_edges)
+
+    @property
+    def parallel_edges(self) -> list[ParallelEdge]:
+        return list(self._parallel_edges)
 
     def add_node(
         self,
@@ -165,6 +178,34 @@ class Graph(Generic[StateT]):
                 router,
                 resolved_path_map,
                 resolved_default,
+            )
+        )
+
+    def add_parallel_edges(
+        self,
+        source: NodeLike[StateT],
+        *targets: NodeLike[StateT],
+        join: NodeTarget[StateT] = END,
+    ) -> None:
+        """Fan out from ``source`` to ``targets``, running them concurrently.
+
+        Each target executes on an isolated copy of the current state. Results
+        are merged back with the field reducers (unannotated fields are
+        last-writer-wins), then execution continues at ``join`` — a node or
+        :data:`~pyantra.graph.edge.END` (the default).
+
+        Branches should return their updates explicitly; a branch that returns
+        ``None`` contributes nothing.
+        """
+        if not targets:
+            raise GraphCompileError(
+                "add_parallel_edges() requires at least one target."
+            )
+        self._parallel_edges.append(
+            ParallelEdge(
+                source=self._resolve(source),
+                targets=tuple(self._resolve(t) for t in targets),
+                join=self._resolve_target(join),
             )
         )
 

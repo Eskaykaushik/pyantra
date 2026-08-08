@@ -16,6 +16,7 @@ from pyantra import (
     CircuitOpenError,
     Graph,
     NodeConfig,
+    NodeExecutionError,
     RetryExhaustedError,
     RunStatus,
 )
@@ -119,11 +120,47 @@ def retry_exhausted_workflow() -> str:
     return str(result.status.value)
 
 
+def retry_on_workflow() -> str:
+    graph = Graph(State)
+    calls = {"fetch": 0}
+
+    class TransientError(Exception):
+        pass
+
+    class BadRequestError(Exception):
+        pass
+
+    @graph.node
+    def fetch(state: State) -> State:
+        calls["fetch"] += 1
+        if state.value == 0:
+            raise BadRequestError("never retry this")
+        raise TransientError("network blip")
+
+    fetch.config = NodeConfig(
+        retries=3, backoff=Backoff.NONE, retry_on=(TransientError,)
+    )
+
+    graph.set_entry_point(fetch)
+
+    graph.compile().run(State(value=1))
+    retried = calls["fetch"]
+
+    bad = graph.compile().run(State(value=0))
+    assert isinstance(bad.exception, NodeExecutionError)
+    print(
+        f"retry_on: transient calls={retried}, "
+        f"bad_request calls={calls['fetch'] - retried}"
+    )
+    return f"{retried}/{calls['fetch'] - retried}"
+
+
 def main() -> None:
     assert retry_workflow() == 42
     assert timeout_workflow() == RunStatus.FAILED.value
     assert circuit_breaker_workflow() == "2/open"
     assert retry_exhausted_workflow() == RunStatus.FAILED.value
+    assert retry_on_workflow() == "4/1"
     print("All examples passed.")
 
 

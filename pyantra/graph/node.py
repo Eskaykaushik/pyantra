@@ -8,10 +8,10 @@ from typing import Generic, TypeAlias
 
 from pyantra.reliability.circuit_breaker import CircuitBreaker
 from pyantra.reliability.retry import Backoff
-from pyantra.state.state import StateT
+from pyantra.state.state import StateT, StateUpdate
 
 NodeFn: TypeAlias = Callable[
-    [StateT], StateT | None | Awaitable[StateT | None]
+    [StateT], StateT | StateUpdate | None | Awaitable[StateT | StateUpdate | None]
 ]
 
 
@@ -22,7 +22,9 @@ class NodeConfig:
     ``retries`` is the number of retries after the first attempt. ``backoff``
     selects the delay strategy (fixed or exponential). ``timeout`` limits a
     single attempt in seconds. ``breaker`` guards the node against a run of
-    failures across runs.
+    failures across runs. ``retry_on`` restricts which failures are retried
+    to the given exception type(s); anything else fails immediately. A single
+    type is accepted as shorthand for a one-element tuple.
     """
 
     retries: int = 0
@@ -31,6 +33,11 @@ class NodeConfig:
     max_delay: float | None = None
     timeout: float | None = None
     breaker: CircuitBreaker | None = None
+    retry_on: tuple[type[Exception], ...] | type[Exception] | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.retry_on, type):
+            object.__setattr__(self, "retry_on", (self.retry_on,))
 
 
 class Node(Generic[StateT]):
@@ -50,7 +57,9 @@ class Node(Generic[StateT]):
         self.fn = fn
         self.config = config or NodeConfig()
 
-    def __call__(self, state: StateT) -> StateT | None | Awaitable[StateT | None]:
+    def __call__(
+        self, state: StateT
+    ) -> StateT | StateUpdate | None | Awaitable[StateT | StateUpdate | None]:
         return self.fn(state)
 
     def __repr__(self) -> str:

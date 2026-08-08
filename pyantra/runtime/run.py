@@ -57,6 +57,7 @@ class Run(Generic[StateT]):
     events: list[RunEvent] = field(default_factory=list)
     error: str | None = None
     exception: BaseException | None = None
+    interrupt: Any = None
 
     @property
     def node_events(self) -> list[RunEvent]:
@@ -70,4 +71,5 @@ class Run(Generic[StateT]):
             "state": self.state,
             "events": [event.to_dict() for event in self.events],
             "error": self.error,
+            "interrupt": self.interrupt,
         }

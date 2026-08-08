@@ -11,8 +11,10 @@ from pyantra.checkpoint.base import CheckpointStore
 from pyantra.graph.conditional import ConditionalEdge
 from pyantra.graph.edge import Edge
 from pyantra.graph.node import Node
-from pyantra.runtime.errors import GraphCompileError
+from pyantra.graph.parallel import ParallelEdge
+from pyantra.runtime.errors import CheckpointError, GraphCompileError
 from pyantra.runtime.run import Run
+from pyantra.state.reducers import Reducer
 from pyantra.state.state import StateT
 
 if TYPE_CHECKING:
@@ -35,6 +37,8 @@ class CompiledGraph(Generic[StateT]):
         nodes: Mapping[str, Node[StateT]],
         edges: Mapping[str, Sequence[Edge]],
         conditional_edges: Mapping[str, Sequence[ConditionalEdge[StateT]]],
+        parallel_edges: Mapping[str, Sequence[ParallelEdge]] | None = None,
+        reducers: Mapping[str, Reducer] | None = None,
     ) -> None:
         self._state_type = state_type
         self._entry_point = entry_point
@@ -45,10 +49,25 @@ class CompiledGraph(Generic[StateT]):
         self._conditional_edges: dict[str, list[ConditionalEdge[StateT]]] = {
             source: list(edges) for source, edges in conditional_edges.items()
         }
+        self._parallel_edges: dict[str, list[ParallelEdge]] = {
+            source: list(edges) for source, edges in (parallel_edges or {}).items()
+        }
+        self._reducers: dict[str, Reducer] = dict(reducers or {})
 
     @property
     def state_type(self) -> type[StateT]:
         return self._state_type
+
+    @property
+    def reducers(self) -> Mapping[str, Reducer]:
+        """Field reducers extracted from the state type."""
+        return dict(self._reducers)
+
+    @property
+    def parallel_edges(self) -> Mapping[str, Sequence[ParallelEdge]]:
+        return {
+            source: list(edges) for source, edges in self._parallel_edges.items()
+        }
 
     @property
     def entry_point(self) -> str:
@@ -79,7 +98,8 @@ class CompiledGraph(Generic[StateT]):
         """Execute the graph synchronously and return a ``Run``.
 
         ``checkpointer`` enables durable checkpoints so a failed run can be
-        resumed by re-invoking ``run`` with the same ``run_id``.
+        resumed by re-invoking ``run`` with the same ``run_id``, and an
+        interrupted run can be resumed with :meth:`resume`.
         """
         return asyncio.run(
             self.arun(
@@ -97,6 +117,7 @@ class CompiledGraph(Generic[StateT]):
         max_iterations: int = _MAX_ITERATIONS_DEFAULT,
         checkpointer: CheckpointStore[StateT] | None = None,
         run_id: str | None = None,
+        interrupt_responses: dict[str, object] | None = None,
     ) -> Run[StateT]:
         """Execute the graph asynchronously and return a ``Run``."""
         from pyantra.runtime.executor import Executor
@@ -106,6 +127,54 @@ class CompiledGraph(Generic[StateT]):
             max_iterations=max_iterations,
             checkpointer=checkpointer,
             run_id=run_id,
+            interrupt_responses=interrupt_responses,
+        )
+
+    def resume(
+        self,
+        run_id: str,
+        interrupt_value: object,
+        *,
+        checkpointer: CheckpointStore[StateT],
+        max_iterations: int = _MAX_ITERATIONS_DEFAULT,
+    ) -> Run[StateT]:
+        """Resume a paused run with the value requested by its interrupt."""
+        return asyncio.run(
+            self.aresume(
+                run_id,
+                interrupt_value,
+                checkpointer=checkpointer,
+                max_iterations=max_iterations,
+            )
+        )
+
+    async def aresume(
+        self,
+        run_id: str,
+        interrupt_value: object,
+        *,
+        checkpointer: CheckpointStore[StateT],
+        max_iterations: int = _MAX_ITERATIONS_DEFAULT,
+    ) -> Run[StateT]:
+        """Resume a paused run asynchronously with the interrupt response."""
+        checkpoint = checkpointer.load(run_id)
+        if checkpoint is None:
+            raise CheckpointError(
+                f"No checkpoint found for run {run_id!r}; cannot resume."
+            )
+        node = checkpoint.resume_at
+        if checkpoint.interrupts:
+            node = checkpoint.interrupts[-1][0]
+        if node is None:
+            raise CheckpointError(
+                f"Run {run_id!r} has no node to resume from."
+            )
+        return await self.arun(
+            checkpoint.state,
+            max_iterations=max_iterations,
+            checkpointer=checkpointer,
+            run_id=run_id,
+            interrupt_responses={node: interrupt_value},
         )
 
 
@@ -125,6 +194,10 @@ def compile_graph(graph: Graph[StateT]) -> CompiledGraph[StateT]:
     for cond_edge in graph.conditional_edges:
         conditional_edges[cond_edge.source].append(cond_edge)
 
+    parallel_edges: dict[str, list[ParallelEdge]] = defaultdict(list)
+    for par_edge in graph.parallel_edges:
+        parallel_edges[par_edge.source].append(par_edge)
+
     assert graph.entry_point is not None
     return CompiledGraph(
         state_type=graph.state_type,
@@ -132,6 +205,8 @@ def compile_graph(graph: Graph[StateT]) -> CompiledGraph[StateT]:
         nodes=graph.nodes,
         edges=edges,
         conditional_edges=conditional_edges,
+        parallel_edges=parallel_edges,
+        reducers=graph.reducers,
     )
 
 
@@ -189,12 +264,38 @@ def validate(graph: Graph[StateT]) -> None:
                 )
 
     normal_sources = {edge.source for edge in graph.edges}
+    parallel_sources = {par_edge.source for par_edge in graph.parallel_edges}
     overlap = normal_sources & conditional_sources
     if overlap:
         raise GraphCompileError(
             f"Node(s) {sorted(overlap)} define both normal and conditional outgoing "
             "edges; use one or the other."
         )
+    parallel_overlap = (
+        normal_sources | conditional_sources
+    ) & parallel_sources
+    if parallel_overlap:
+        raise GraphCompileError(
+            f"Node(s) {sorted(parallel_overlap)} define both a parallel fan-out and "
+            "other outgoing edges; use one or the other."
+        )
+
+    for par_edge in graph.parallel_edges:
+        if par_edge.source not in nodes:
+            raise GraphCompileError(
+                f"Parallel edge source {par_edge.source!r} is not a registered node."
+            )
+        for target in par_edge.targets:
+            if target not in nodes:
+                raise GraphCompileError(
+                    f"Parallel fan-out from {par_edge.source!r} references "
+                    f"unknown node {target!r}."
+                )
+        if par_edge.join is not None and par_edge.join not in nodes:
+            raise GraphCompileError(
+                f"Parallel join from {par_edge.source!r} references unknown "
+                f"node {par_edge.join!r}."
+            )
 
     from collections import Counter
 
@@ -206,7 +307,9 @@ def validate(graph: Graph[StateT]) -> None:
             "edges; use add_conditional_edges() for branching."
         )
 
-    reachable = _reachable(nodes, graph.edges, graph.conditional_edges, entry)
+    reachable = _reachable(
+        nodes, graph.edges, graph.conditional_edges, graph.parallel_edges, entry
+    )
     unreachable = set(nodes) - reachable
     if unreachable:
         raise GraphCompileError(
@@ -221,6 +324,7 @@ def _reachable(
     nodes: Mapping[str, Node[StateT]],
     edges: Sequence[Edge],
     conditional_edges: Sequence[ConditionalEdge[StateT]],
+    parallel_edges: Sequence[ParallelEdge],
     entry: str,
 ) -> set[str]:
     """Compute nodes reachable from the entry point.
@@ -239,6 +343,10 @@ def _reachable(
                 outgoing[cond_edge.source].append(cond_edge.default)
         else:
             outgoing[cond_edge.source].extend(nodes)
+    for par_edge in parallel_edges:
+        outgoing[par_edge.source].extend(par_edge.targets)
+        if par_edge.join is not None:
+            outgoing[par_edge.source].append(par_edge.join)
 
     seen: set[str] = set()
     queue: deque[str] = deque([entry])

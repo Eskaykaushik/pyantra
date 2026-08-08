@@ -1,6 +1,11 @@
 """Pyantra — typed, observable, reliable workflows for AI agents."""
 
-from pyantra.checkpoint import Checkpoint, CheckpointStore, MemoryCheckpointStore
+from pyantra.checkpoint import (
+    Checkpoint,
+    CheckpointStore,
+    MemoryCheckpointStore,
+    SQLiteCheckpointStore,
+)
 from pyantra.graph.edge import END
 from pyantra.graph.graph import Graph
 from pyantra.graph.node import Node, NodeConfig
@@ -27,6 +32,7 @@ from pyantra.runtime.errors import (
     PyantraError,
     RetryExhaustedError,
 )
+from pyantra.runtime.interrupt import GraphInterrupt, interrupt
 from pyantra.runtime.run import Run, RunEvent, RunStatus
 
 __all__ = [
@@ -41,6 +47,7 @@ __all__ = [
     "Graph",
     "GraphCompileError",
     "GraphExecutionError",
+    "GraphInterrupt",
     "InvalidRouteError",
     "LLM",
     "LLMResponse",
@@ -58,12 +65,14 @@ __all__ = [
     "Run",
     "RunEvent",
     "RunStatus",
+    "SQLiteCheckpointStore",
     "Usage",
     "UsageTracker",
     "compute_delay",
+    "interrupt",
     "is_retryable",
     "non_retryable",
     "with_timeout",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

@@ -8,6 +8,7 @@ implementation shared by both sync and async execution.
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import time
 import uuid
@@ -16,7 +17,8 @@ from typing import Generic, cast
 
 from pyantra.checkpoint.base import Checkpoint, CheckpointStore
 from pyantra.graph.compiler import CompiledGraph
-from pyantra.graph.node import Node
+from pyantra.graph.node import Node, NodeConfig
+from pyantra.graph.parallel import ParallelEdge
 from pyantra.reliability.retry import compute_delay, is_retryable
 from pyantra.reliability.timeout import with_timeout
 from pyantra.runtime.errors import (
@@ -27,8 +29,10 @@ from pyantra.runtime.errors import (
     NodeTimeoutError,
     RetryExhaustedError,
 )
+from pyantra.runtime.interrupt import GraphInterrupt, _run_context, _RunContext
 from pyantra.runtime.run import Run, RunEvent, RunStatus
-from pyantra.state.state import StateT
+from pyantra.state.reducers import apply_updates, merge_state
+from pyantra.state.state import StateT, StateUpdate
 
 
 class Executor(Generic[StateT]):
@@ -36,6 +40,8 @@ class Executor(Generic[StateT]):
 
     def __init__(self, graph: CompiledGraph[StateT]) -> None:
         self._graph = graph
+        self._checkpointer: CheckpointStore[StateT] | None = None
+        self._interrupt_responses: dict[str, object] = {}
 
     async def arun(
         self,
@@ -44,8 +50,11 @@ class Executor(Generic[StateT]):
         max_iterations: int = 100,
         checkpointer: CheckpointStore[StateT] | None = None,
         run_id: str | None = None,
+        interrupt_responses: dict[str, object] | None = None,
     ) -> Run[StateT]:
         run_id = run_id or uuid.uuid4().hex
+        self._checkpointer = checkpointer
+        self._interrupt_responses = dict(interrupt_responses or {})
 
         resume_at: str | None = None
         events: list[RunEvent] = []
@@ -72,6 +81,10 @@ class Executor(Generic[StateT]):
             self._emit(run, "run.completed")
             if checkpointer is not None:
                 checkpointer.delete(run.run_id)
+        except GraphInterrupt as exc:
+            run.status = RunStatus.PAUSED
+            run.interrupt = exc.payload
+            self._emit(run, "run.paused", message=str(exc.payload))
         except Exception as exc:
             run.status = RunStatus.FAILED
             run.error = str(exc)
@@ -109,57 +122,100 @@ class Executor(Generic[StateT]):
                 self._checkpoint(checkpointer, run, current, state)
 
             node = self._graph.nodes[current]
-            self._emit(run, "node.started", node=current)
-            started = time.perf_counter()
-            try:
-                result = await self._invoke_with_policy(run, node, state)
-            except Exception as exc:
-                duration_ms = _duration_ms(started)
-                self._emit(
-                    run,
-                    "node.failed",
-                    node=current,
-                    duration_ms=duration_ms,
-                    message=str(exc),
-                )
-                if isinstance(exc, GraphExecutionError) and exc.run_id is None:
-                    exc.run_id = run.run_id
-                if (
-                    isinstance(
-                        exc,
-                        (NodeExecutionError, NodeTimeoutError, RetryExhaustedError),
-                    )
-                    and exc.node is None
-                ):
-                    exc.node = current
-                raise
-
-            if result is not None and not isinstance(result, self._graph.state_type):
-                raise NodeExecutionError(
-                    f"Node {current!r} returned {type(result).__name__!r}, expected "
-                    f"{self._graph.state_type.__name__!r}.",
-                    run_id=run.run_id,
-                    node=current,
-                )
+            result = await self._run_node(run, node, state)
             if result is not None:
-                state = result
-
-            self._emit(
-                run,
-                "node.completed",
-                node=current,
-                duration_ms=_duration_ms(started),
-            )
+                state = self._merge_result(run, node.name, state, result)
             run.state = state
             current = await self._next(run, current, state)
         return state
+
+    async def _run_node(
+        self,
+        run: Run[StateT],
+        node: Node[StateT],
+        state: StateT,
+    ) -> StateT | StateUpdate | None:
+        """Execute a single node with reliability policy and emit events.
+
+        Returns the node's raw result (state, partial update, or ``None``);
+        merging is the caller's responsibility so parallel branches can merge
+        into a shared state.
+        """
+        self._emit(run, "node.started", node=node.name)
+        started = time.perf_counter()
+        token = _run_context.set(
+            _RunContext(
+                run_id=run.run_id,
+                node=node.name,
+                responses=self._interrupt_responses,
+                checkpointer=self._checkpointer,
+            )
+        )
+        try:
+            result = await self._invoke_with_policy(run, node, state)
+        except GraphInterrupt as exc:
+            duration_ms = _duration_ms(started)
+            self._emit(
+                run,
+                "node.interrupted",
+                node=node.name,
+                duration_ms=duration_ms,
+                message=str(exc.payload),
+            )
+            self._persist_interrupt(run, node.name, exc.payload)
+            raise
+        except Exception as exc:
+            duration_ms = _duration_ms(started)
+            self._emit(
+                run,
+                "node.failed",
+                node=node.name,
+                duration_ms=duration_ms,
+                message=str(exc),
+            )
+            if isinstance(exc, GraphExecutionError) and exc.run_id is None:
+                exc.run_id = run.run_id
+            if (
+                isinstance(
+                    exc,
+                    (NodeExecutionError, NodeTimeoutError, RetryExhaustedError),
+                )
+                and exc.node is None
+            ):
+                exc.node = node.name
+            raise
+        finally:
+            _run_context.reset(token)
+        self._emit(
+            run,
+            "node.completed",
+            node=node.name,
+            duration_ms=_duration_ms(started),
+        )
+        return result
+
+    def _persist_interrupt(
+        self,
+        run: Run[StateT],
+        node_name: str,
+        payload: object,
+    ) -> None:
+        """Record a pending interruption in the checkpoint for durability."""
+        checkpointer = self._checkpointer
+        if checkpointer is None:
+            return
+        checkpoint = checkpointer.load(run.run_id)
+        if checkpoint is None:
+            return
+        checkpoint.interrupts.append((node_name, payload))
+        checkpointer.save(checkpoint)
 
     async def _invoke_with_policy(
         self,
         run: Run[StateT],
         node: Node[StateT],
         state: StateT,
-    ) -> StateT | None:
+    ) -> StateT | StateUpdate | None:
         config = node.config
         breaker = config.breaker
         if breaker is not None:
@@ -183,6 +239,8 @@ class Executor(Generic[StateT]):
                     node=node.name,
                     message=f"Timeout after {config.timeout}s",
                 )
+                if not _should_retry(config, exc):
+                    break
             except Exception as exc:
                 last_exc = exc
                 self._emit(
@@ -191,7 +249,7 @@ class Executor(Generic[StateT]):
                     node=node.name,
                     message=str(exc),
                 )
-                if not is_retryable(exc):
+                if not _should_retry(config, exc):
                     break
             else:
                 if breaker is not None:
@@ -234,11 +292,45 @@ class Executor(Generic[StateT]):
             node=node.name,
         ) from last_exc
 
-    async def _invoke_node(self, node: Node[StateT], state: StateT) -> StateT | None:
+    async def _invoke_node(
+        self, node: Node[StateT], state: StateT
+    ) -> StateT | StateUpdate | None:
         result = node(state)
         if inspect.isawaitable(result):
-            result = await cast(Awaitable[StateT | None], result)
+            return await cast(Awaitable[StateT | StateUpdate | None], result)
         return result
+
+    def _merge_result(
+        self,
+        run: Run[StateT],
+        node_name: str,
+        state: StateT,
+        result: StateT | StateUpdate,
+    ) -> StateT:
+        """Merge a node result into ``state`` in place and return ``state``.
+
+        * ``dict`` — partial updates applied per-field (reducers run).
+        * the state type — merged field by field (reducers run); if the node
+          returned the very object it received, the mutation is already in
+          place and nothing is merged.
+        """
+        try:
+            if isinstance(result, dict):
+                return apply_updates(state, result, self._graph.reducers)
+            if isinstance(result, self._graph.state_type):
+                return merge_state(state, result, self._graph.reducers)
+        except Exception as exc:
+            raise NodeExecutionError(
+                f"Node {node_name!r} returned state that failed to merge: {exc}",
+                run_id=run.run_id,
+                node=node_name,
+            ) from exc
+        raise NodeExecutionError(
+            f"Node {node_name!r} returned {type(result).__name__!r}, expected "
+            f"{self._graph.state_type.__name__!r} or a partial update dict.",
+            run_id=run.run_id,
+            node=node_name,
+        )
 
     def _checkpoint(
         self,
@@ -281,6 +373,10 @@ class Executor(Generic[StateT]):
             self._emit(run, "edge.selected", node=current, message=target)
             return target
 
+        parallel = self._graph.parallel_edges.get(current)
+        if parallel is not None:
+            return await self._run_parallel(run, parallel[0], state)
+
         edges = self._graph.edges.get(current, [])
         if not edges:
             self._emit(run, "edge.selected", node=current, message="END")
@@ -288,6 +384,51 @@ class Executor(Generic[StateT]):
         target = edges[0].target
         self._emit(run, "edge.selected", node=current, message=target or "END")
         return target
+
+    async def _run_parallel(
+        self,
+        run: Run[StateT],
+        parallel: ParallelEdge,
+        state: StateT,
+    ) -> str | None:
+        """Run all parallel targets concurrently and merge their results.
+
+        Returns the join node name, or ``None`` to end the workflow. A branch
+        that returns ``None`` contributes nothing.
+        """
+        self._emit(
+            run,
+            "edge.selected",
+            node=parallel.source,
+            message=" || ".join(parallel.targets),
+        )
+        results = await asyncio.gather(
+            *(self._run_branch(run, target, state) for target in parallel.targets)
+        )
+        merged = state
+        for branch_name, result in results:
+            if result is not None:
+                merged = self._merge_result(run, branch_name, merged, result)
+        run.state = merged
+        if parallel.join is not None:
+            self._emit(
+                run, "edge.selected", node=parallel.source, message=parallel.join
+            )
+            return parallel.join
+        self._emit(run, "edge.selected", node=parallel.source, message="END")
+        return None
+
+    async def _run_branch(
+        self,
+        run: Run[StateT],
+        target: str,
+        state: StateT,
+    ) -> tuple[str, StateT | StateUpdate | None]:
+        """Execute one parallel branch on an isolated copy of the state."""
+        node = self._graph.nodes[target]
+        branch_state = copy.deepcopy(state)
+        result = await self._run_node(run, node, branch_state)
+        return target, result
 
     def _emit(
         self,
@@ -314,6 +455,20 @@ async def _resolve_key(raw: str | Awaitable[str]) -> str:
     if inspect.isawaitable(raw):
         return await raw
     return raw
+
+
+def _should_retry(config: NodeConfig, exc: BaseException) -> bool:
+    """Whether a failure should be retried under ``config``.
+
+    Never-retryable exceptions (``@non_retryable``) always fail immediately.
+    When ``config.retry_on`` is set, only failures matching one of the listed
+    exception types are retried; everything else fails immediately.
+    """
+    if not is_retryable(exc):
+        return False
+    if config.retry_on is not None:
+        return isinstance(exc, config.retry_on)
+    return True
 
 
 def _duration_ms(started: float) -> float:

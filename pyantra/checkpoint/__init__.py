@@ -2,5 +2,11 @@
 
 from pyantra.checkpoint.base import Checkpoint, CheckpointStore
 from pyantra.checkpoint.memory import MemoryCheckpointStore
+from pyantra.checkpoint.sqlite import SQLiteCheckpointStore
 
-__all__ = ["Checkpoint", "CheckpointStore", "MemoryCheckpointStore"]
+__all__ = [
+    "Checkpoint",
+    "CheckpointStore",
+    "MemoryCheckpointStore",
+    "SQLiteCheckpointStore",
+]

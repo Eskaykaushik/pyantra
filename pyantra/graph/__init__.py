@@ -5,6 +5,7 @@ from pyantra.graph.conditional import ConditionalEdge, RouterFn
 from pyantra.graph.edge import END, Edge
 from pyantra.graph.graph import Graph
 from pyantra.graph.node import Node, NodeFn
+from pyantra.graph.parallel import ParallelEdge
 
 __all__ = [
     "CompiledGraph",
@@ -14,5 +15,6 @@ __all__ = [
     "Graph",
     "Node",
     "NodeFn",
+    "ParallelEdge",
     "RouterFn",
 ]
