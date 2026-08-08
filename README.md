@@ -44,6 +44,27 @@ Requires Python 3.10 or later.
 
 ---
 
+## Packages
+
+Pyantra is a monorepo of small, focused packages. The core is dependency-free;
+integrations opt in only when you install them.
+
+| Package | What it provides |
+| --- | --- |
+| [`pyantra`](packages/pyantra-core/README.md) | Core workflow engine — graphs, reliability, checkpoints, LLM abstraction. |
+| `pyantra-memory` | Vector stores, RAG, and caching. *(planned)* |
+| `pyantra-eval` | Trajectory evals, LLM judges, pytest plugin. *(planned)* |
+| `pyantra-guard` | Type guards, budget caps, PII redaction. *(planned)* |
+| `pyantra-otel` | OpenTelemetry & tracing exporters. *(planned)* |
+| `pyantra-studio` | Local dev server & visual web debugger. *(planned)* |
+
+```bash
+pip install pyantra                    # core only
+pip install pyantra pyantra-memory     # core + a companion package
+```
+
+---
+
 ## Quickstart
 
 ```python
@@ -283,7 +304,7 @@ def summarize(state: State) -> State:
 ```
 
 `tracker.total` reports aggregate input/output/cache tokens and cost. See
-[`docs/llm.md`](docs/llm.md) for the design and roadmap.
+[`docs/llm.md`](packages/pyantra-core/docs/llm.md) for the design and roadmap.
 
 ---
 
@@ -400,27 +421,59 @@ PyantraError
 
 ## Examples
 
-End-to-end runnable examples live in [`examples/`](examples/):
+End-to-end runnable examples live in
+[`packages/pyantra-core/examples/`](packages/pyantra-core/examples/):
 
 ```bash
-python examples/basic_workflow.py
-python examples/reliability_workflow.py
-python examples/advanced_workflow.py   # reducers, parallel, human-in-the-loop
+python packages/pyantra-core/examples/basic_workflow.py
+python packages/pyantra-core/examples/reliability_workflow.py
+python packages/pyantra-core/examples/advanced_workflow.py   # reducers, parallel, human-in-the-loop
 ```
+
+---
+
+## Docs and tutorials
+
+Guides for each core topic live in
+[`packages/pyantra-core/docs/`](packages/pyantra-core/docs/):
+
+- [Getting started](packages/pyantra-core/docs/getting-started.md) — install, quickstart, core concepts
+- [Graphs and routing](packages/pyantra-core/docs/graphs.md) — nodes, edges, conditional routing, `END`
+- [State merging](packages/pyantra-core/docs/state.md) — reducers and partial updates with `Annotated`
+- [Parallel execution](packages/pyantra-core/docs/parallel.md) — fan-out/fan-in with reducers
+- [Async execution](packages/pyantra-core/docs/async.md) — `arun()`, mixed sync/async nodes
+- [Reliability](packages/pyantra-core/docs/reliability.md) — retries, backoff, timeouts, `retry_on`
+- [Circuit breakers](packages/pyantra-core/docs/circuit-breakers.md) — thresholds, reset, half-open
+- [LLMs](packages/pyantra-core/docs/llm.md) — provider interface, `MockLLM`, `UsageTracker`
+- [Checkpoints](packages/pyantra-core/docs/checkpoints.md) — memory and SQLite stores, resume
+- [Human-in-the-loop](packages/pyantra-core/docs/human-in-the-loop.md) — `interrupt()` and `resume()`
+- [Observability](packages/pyantra-core/docs/observability.md) — event traces and `Run` results
+- [Errors](packages/pyantra-core/docs/errors.md) — the `PyantraError` hierarchy
 
 ---
 
 ## Development
 
-```bash
-pip install -e ".[dev]"
+Pyantra uses [`uv`](https://docs.astral.sh/uv/) workspaces. Install uv, then:
 
-ruff check .          # lint
-mypy pyantra          # type check
-pytest                # test suite
+```bash
+uv sync --all-packages   # install every workspace package
+
+uv run ruff check .                                  # lint
+uv run mypy packages/pyantra-core/pyantra            # type check
+uv run pytest                                        # test suite
 ```
 
 This repository uses [conventional commits](https://www.conventionalcommits.org/).
+
+### Releasing
+
+All packages share one version and one tag. To release:
+
+1. Bump `version` in `pyproject.toml` and every `packages/*/pyproject.toml`.
+2. Commit, then tag with `v<version>` (e.g. `v0.4.0`) and push. The tag
+   triggers the `Publish to PyPI` workflow, which builds every workspace
+   package and uploads them to PyPI.
 
 ---
 

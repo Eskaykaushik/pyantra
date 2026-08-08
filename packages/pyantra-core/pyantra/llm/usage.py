@@ -13,7 +13,7 @@ class UsageTracker:
     A tracker is created by the caller (typically one per run) and handed to
     nodes that make model calls, or captured via closure by a shared LLM
     wrapper. Nodes record usage explicitly for now; automatic per-run capture
-    is deferred to Phase 3 (see ``docs/llm.md``).
+    is deferred to Phase 3 (see ``packages/pyantra-core/docs/llm.md``).
     """
 
     def __init__(self) -> None:

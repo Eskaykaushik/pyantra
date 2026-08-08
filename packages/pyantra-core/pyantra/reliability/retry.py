@@ -28,9 +28,7 @@ def compute_delay(
     if backoff == Backoff.NONE or base_delay <= 0:
         return 0.0
     delay = (
-        base_delay
-        if backoff == Backoff.FIXED
-        else base_delay * (2 ** (attempt - 1))
+        base_delay if backoff == Backoff.FIXED else base_delay * (2 ** (attempt - 1))
     )
     if max_delay is not None:
         delay = min(delay, max_delay)

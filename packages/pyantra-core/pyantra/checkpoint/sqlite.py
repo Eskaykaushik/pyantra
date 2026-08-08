@@ -77,9 +77,7 @@ class SQLiteCheckpointStore(CheckpointStore[StateT]):
 
     def delete(self, run_id: str) -> None:
         with self._lock:
-            self._conn.execute(
-                "DELETE FROM checkpoints WHERE run_id = ?", (run_id,)
-            )
+            self._conn.execute("DELETE FROM checkpoints WHERE run_id = ?", (run_id,))
             self._conn.commit()
 
     def close(self) -> None:

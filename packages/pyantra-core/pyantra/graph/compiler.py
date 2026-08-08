@@ -65,9 +65,7 @@ class CompiledGraph(Generic[StateT]):
 
     @property
     def parallel_edges(self) -> Mapping[str, Sequence[ParallelEdge]]:
-        return {
-            source: list(edges) for source, edges in self._parallel_edges.items()
-        }
+        return {source: list(edges) for source, edges in self._parallel_edges.items()}
 
     @property
     def entry_point(self) -> str:
@@ -166,9 +164,7 @@ class CompiledGraph(Generic[StateT]):
         if checkpoint.interrupts:
             node = checkpoint.interrupts[-1][0]
         if node is None:
-            raise CheckpointError(
-                f"Run {run_id!r} has no node to resume from."
-            )
+            raise CheckpointError(f"Run {run_id!r} has no node to resume from.")
         return await self.arun(
             checkpoint.state,
             max_iterations=max_iterations,
@@ -271,9 +267,7 @@ def validate(graph: Graph[StateT]) -> None:
             f"Node(s) {sorted(overlap)} define both normal and conditional outgoing "
             "edges; use one or the other."
         )
-    parallel_overlap = (
-        normal_sources | conditional_sources
-    ) & parallel_sources
+    parallel_overlap = (normal_sources | conditional_sources) & parallel_sources
     if parallel_overlap:
         raise GraphCompileError(
             f"Node(s) {sorted(parallel_overlap)} define both a parallel fan-out and "

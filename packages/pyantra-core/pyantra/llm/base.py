@@ -16,7 +16,8 @@ class LLM(Protocol):
     :class:`Message` into provider-native payloads and for filling in
     :class:`Usage` (including cost) from provider responses.
 
-    See ``docs/llm.md`` for the design and what is deferred to later phases.
+    See ``packages/pyantra-core/docs/llm.md`` for the design and what is
+    deferred to later phases.
     """
 
     def generate(self, messages: Sequence[Message], **kwargs: object) -> LLMResponse:

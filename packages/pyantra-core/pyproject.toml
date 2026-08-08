@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyantra"
+version = "0.3.0"
+description = "Typed, observable, reliable Python workflows for AI agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Eskay Kaushik", email = "eskaykaushik14@gmail.com" }]
+keywords = ["ai", "agents", "workflows", "graph", "llm"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Eskaykaushik/pyantra"
+Repository = "https://github.com/Eskaykaushik/pyantra"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pyantra"]
+include = ["pyantra/py.typed"]

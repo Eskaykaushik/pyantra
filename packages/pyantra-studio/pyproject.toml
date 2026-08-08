@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyantra-studio"
+version = "0.3.0"
+description = "Local development server and visual web debugger for Pyantra."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["pyantra_studio"]
