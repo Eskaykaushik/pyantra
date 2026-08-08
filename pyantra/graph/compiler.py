@@ -7,6 +7,7 @@ from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Generic
 
+from pyantra.checkpoint.base import CheckpointStore
 from pyantra.graph.conditional import ConditionalEdge
 from pyantra.graph.edge import Edge
 from pyantra.graph.node import Node
@@ -72,20 +73,40 @@ class CompiledGraph(Generic[StateT]):
         state: StateT,
         *,
         max_iterations: int = _MAX_ITERATIONS_DEFAULT,
+        checkpointer: CheckpointStore[StateT] | None = None,
+        run_id: str | None = None,
     ) -> Run[StateT]:
-        """Execute the graph synchronously and return a ``Run``."""
-        return asyncio.run(self.arun(state, max_iterations=max_iterations))
+        """Execute the graph synchronously and return a ``Run``.
+
+        ``checkpointer`` enables durable checkpoints so a failed run can be
+        resumed by re-invoking ``run`` with the same ``run_id``.
+        """
+        return asyncio.run(
+            self.arun(
+                state,
+                max_iterations=max_iterations,
+                checkpointer=checkpointer,
+                run_id=run_id,
+            )
+        )
 
     async def arun(
         self,
         state: StateT,
         *,
         max_iterations: int = _MAX_ITERATIONS_DEFAULT,
+        checkpointer: CheckpointStore[StateT] | None = None,
+        run_id: str | None = None,
     ) -> Run[StateT]:
         """Execute the graph asynchronously and return a ``Run``."""
         from pyantra.runtime.executor import Executor
 
-        return await Executor(self).arun(state, max_iterations=max_iterations)
+        return await Executor(self).arun(
+            state,
+            max_iterations=max_iterations,
+            checkpointer=checkpointer,
+            run_id=run_id,
+        )
 
 
 def compile_graph(graph: Graph[StateT]) -> CompiledGraph[StateT]:

@@ -8,7 +8,7 @@ from typing import Generic, TypeAlias, overload
 from pyantra.graph.compiler import CompiledGraph
 from pyantra.graph.conditional import ConditionalEdge, RouterFn
 from pyantra.graph.edge import Edge, _End
-from pyantra.graph.node import Node, NodeFn
+from pyantra.graph.node import Node, NodeConfig, NodeFn
 from pyantra.runtime.errors import GraphCompileError
 from pyantra.state.state import StateT
 
@@ -70,12 +70,19 @@ class Graph(Generic[StateT]):
         fn: NodeFn[StateT],
         *,
         name: str | None = None,
+        config: NodeConfig | None = None,
     ) -> Node[StateT]:
         """Register a function as a node and return its ``Node``."""
-        return self._register(fn, name=name)
+        return self._register(fn, name=name, config=config)
 
     @overload
-    def node(self, fn: NodeFn[StateT], *, name: str | None = None) -> Node[StateT]: ...
+    def node(
+        self,
+        fn: NodeFn[StateT],
+        *,
+        name: str | None = None,
+        config: NodeConfig | None = None,
+    ) -> Node[StateT]: ...
 
     @overload
     def node(
@@ -83,6 +90,7 @@ class Graph(Generic[StateT]):
         fn: None = None,
         *,
         name: str | None = None,
+        config: NodeConfig | None = None,
     ) -> Callable[[NodeFn[StateT]], Node[StateT]]: ...
 
     def node(
@@ -90,20 +98,22 @@ class Graph(Generic[StateT]):
         fn: NodeFn[StateT] | None = None,
         *,
         name: str | None = None,
+        config: NodeConfig | None = None,
     ) -> Node[StateT] | Callable[[NodeFn[StateT]], Node[StateT]]:
         """Decorator to register a function as a node.
 
-        Usable as ``@graph.node`` or ``@graph.node(name="...")``.
+        Usable as ``@graph.node`` or ``@graph.node(name="...", config=...)``.
         """
         if fn is None:
-            return lambda func: self._register(func, name=name)
-        return self._register(fn, name=name)
+            return lambda func: self._register(func, name=name, config=config)
+        return self._register(fn, name=name, config=config)
 
     def _register(
         self,
         fn: NodeFn[StateT],
         *,
         name: str | None = None,
+        config: NodeConfig | None = None,
     ) -> Node[StateT]:
         node_name = name if name is not None else getattr(fn, "__name__", None)
         if node_name is None:
@@ -113,7 +123,7 @@ class Graph(Generic[StateT]):
             )
         if node_name in self._nodes:
             raise GraphCompileError(f"Duplicate node name: {node_name!r}.")
-        node = Node(node_name, fn)
+        node = Node(node_name, fn, config=config)
         self._nodes[node_name] = node
         return node
 
