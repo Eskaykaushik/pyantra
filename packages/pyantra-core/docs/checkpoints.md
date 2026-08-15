@@ -27,9 +27,23 @@ memory = MemoryCheckpointStore()
 sqlite = SQLiteCheckpointStore("checkpoints.db")
 ```
 
-`SQLiteCheckpointStore` serializes state, events, and interrupt payloads with
-`pickle`, so any picklable state type works and the database survives process
-restarts. It is thread-safe and usable as a context manager:
+`SQLiteCheckpointStore` serializes checkpoints with a pluggable `Serializer`
+(`pyantra.checkpoint.serializer`) — **JSON by default**, which is safe (no
+code runs on load) and portable. State fields and interrupt payloads must be
+JSON-serializable (primitives, containers, nested dataclasses). Pass
+`PickleSerializer` for arbitrary object graphs — do **not** use it with
+checkpoints from an untrusted source, since unpickling arbitrary bytes can
+execute code:
+
+```python
+from pyantra import PickleSerializer, SQLiteCheckpointStore
+
+store = SQLiteCheckpointStore(
+    "checkpoints.db", serializer=PickleSerializer()
+)
+```
+
+The store is thread-safe and usable as a context manager:
 
 ```python
 with SQLiteCheckpointStore("checkpoints.db") as store:

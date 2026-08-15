@@ -45,6 +45,14 @@ Async callers use `aresume()`:
 resumed = await app.aresume("review-7", "approved", checkpointer=store)
 ```
 
+Sync callers that find themselves inside a running event loop (a FastAPI
+handler, for example) can use `resume_sync()` instead — it blocks until the
+resumed run finishes and works from both sync and async context:
+
+```python
+resumed = app.resume_sync("review-7", "approved", checkpointer=store)
+```
+
 ## Multiple interrupts
 
 A run may pause more than once. Each `resume()` answers the **most recent**
@@ -57,7 +65,8 @@ interruption; subsequent `interrupt()` calls pause again and appear on the next
   own `except Exception` cannot swallow it.
 - Calling `interrupt()` without a checkpointer raises `PyantraError` — pass
   `checkpointer=...` to `run()`.
-- The payload can be any picklable value (it is stored in the checkpoint).
+- The payload must be serializable by the checkpointer (JSON-serializable
+  with the default serializer; any picklable value with `PickleSerializer`).
 
 ## Approval flow pattern
 

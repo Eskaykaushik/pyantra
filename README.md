@@ -54,7 +54,7 @@ integrations opt in only when you install them.
 | [`pyantra`](packages/pyantra-core/README.md) | Core workflow engine — graphs, reliability, checkpoints, LLM abstraction. |
 | `pyantra-memory` | Vector stores, RAG, and caching. *(planned)* |
 | `pyantra-eval` | Trajectory evals, LLM judges, pytest plugin. *(planned)* |
-| `pyantra-guard` | Type guards, budget caps, PII redaction. *(planned)* |
+| `pyantra-guard` | Runtime type guards, LLM budget caps, PII redaction. |
 | `pyantra-otel` | OpenTelemetry & tracing exporters. *(planned)* |
 | `pyantra-studio` | Local dev server & visual web debugger. *(planned)* |
 
@@ -334,9 +334,12 @@ from pyantra import SQLiteCheckpointStore
 store = SQLiteCheckpointStore("checkpoints.db")
 ```
 
-State, events, and pending interrupts are serialized with `pickle`, so
-`SQLiteCheckpointStore` survives process restarts. Additional backends
-(Postgres, Redis) can be added behind the same interface.
+State, events, and pending interrupts are serialized by the store's pluggable
+serializer — JSON by default (safe and portable; state fields and interrupt
+payloads must be JSON-serializable). A `PickleSerializer` is available for
+arbitrary object graphs; do not use it with checkpoints from untrusted
+sources. `SQLiteCheckpointStore` survives process restarts. Additional
+backends (Postgres, Redis) can be added behind the same interface.
 
 ---
 

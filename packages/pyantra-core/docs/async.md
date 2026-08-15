@@ -54,6 +54,24 @@ async def route(state: State) -> str:
 result = await app.aresume(run_id, "approved", checkpointer=store)
 ```
 
+## Calling the sync API from async code
+
+`run()` and `resume()` use `asyncio.run` under the hood, which raises
+`RuntimeError` when an event loop is already running (e.g. inside a FastAPI
+handler or an async node). If you must call the sync API from async context,
+use `run_sync()` / `resume_sync()` — they run the graph to completion on a
+fresh event loop in a worker thread and block until it finishes:
+
+```python
+result = app.run_sync(State(value=1))
+resumed = app.resume_sync(run_id, "approved", checkpointer=store)
+```
+
+With no event loop running, `run_sync()` and `resume_sync()` behave exactly
+like their `run()` / `resume()` counterparts. Note that the worker thread
+blocks the calling thread for the whole run, so prefer `await app.arun(...)`
+/ `await app.aresume(...)` in an async server when the run may be long.
+
 ## Timeouts in async nodes
 
 Per-node `timeout` in `NodeConfig` applies to both sync and async nodes. For

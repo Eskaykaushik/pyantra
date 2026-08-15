@@ -21,6 +21,6 @@ jobs:
       - name: Lint
         run: uv run ruff check .
       - name: Type check
-        run: uv run mypy packages/pyantra-core/pyantra
+        run: uv run mypy packages/pyantra-core/pyantra packages/pyantra-guard/pyantra_guard
       - name: Test
         run: uv run pytest

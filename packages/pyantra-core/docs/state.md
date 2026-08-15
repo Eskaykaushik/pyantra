@@ -92,6 +92,7 @@ def keep_longest(current: list[str], update: list[str]) -> list[str]:
 
 ## Custom reducers in detail
 
-Reducers must be picklable if you use a durable
-[checkpoint store](checkpoints.md), because state is serialized with `pickle`.
-Module-level functions and `operator` functions are the safest choice.
+Durable [checkpoint stores](checkpoints.md) serialize state with the store's
+serializer — JSON by default. With the default serializer, state field values
+must be JSON-serializable (primitives, containers, and nested dataclasses);
+use `PickleSerializer` for arbitrary objects.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Generic
@@ -98,15 +99,73 @@ class CompiledGraph(Generic[StateT]):
         ``checkpointer`` enables durable checkpoints so a failed run can be
         resumed by re-invoking ``run`` with the same ``run_id``, and an
         interrupted run can be resumed with :meth:`resume`.
+
+        Raises ``RuntimeError`` when called from inside a running event loop;
+        use :meth:`run_sync` there.
         """
-        return asyncio.run(
-            self.arun(
-                state,
-                max_iterations=max_iterations,
-                checkpointer=checkpointer,
-                run_id=run_id,
-            )
+        coro = self.arun(
+            state,
+            max_iterations=max_iterations,
+            checkpointer=checkpointer,
+            run_id=run_id,
         )
+        try:
+            return asyncio.run(coro)
+        except RuntimeError:
+            coro.close()
+            raise
+
+    def run_sync(
+        self,
+        state: StateT,
+        *,
+        max_iterations: int = _MAX_ITERATIONS_DEFAULT,
+        checkpointer: CheckpointStore[StateT] | None = None,
+        run_id: str | None = None,
+    ) -> Run[StateT]:
+        """Execute the graph synchronously even inside a running event loop.
+
+        With no event loop running this behaves like :meth:`run`. When a loop
+        is already running (e.g. inside a FastAPI handler or an async node),
+        the graph runs to completion on a fresh event loop in a worker thread
+        and this method blocks until it finishes.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(
+                self.arun(
+                    state,
+                    max_iterations=max_iterations,
+                    checkpointer=checkpointer,
+                    run_id=run_id,
+                )
+            )
+
+        result: Run[StateT] | None = None
+        error: BaseException | None = None
+
+        def target() -> None:
+            nonlocal result, error
+            try:
+                result = asyncio.run(
+                    self.arun(
+                        state,
+                        max_iterations=max_iterations,
+                        checkpointer=checkpointer,
+                        run_id=run_id,
+                    )
+                )
+            except BaseException as exc:
+                error = exc
+
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+        thread.join()
+        if error is not None:
+            raise error
+        assert result is not None
+        return result
 
     async def arun(
         self,
@@ -136,15 +195,65 @@ class CompiledGraph(Generic[StateT]):
         checkpointer: CheckpointStore[StateT],
         max_iterations: int = _MAX_ITERATIONS_DEFAULT,
     ) -> Run[StateT]:
-        """Resume a paused run with the value requested by its interrupt."""
-        return asyncio.run(
-            self.aresume(
-                run_id,
-                interrupt_value,
-                checkpointer=checkpointer,
-                max_iterations=max_iterations,
-            )
+        """Resume a paused run with the value requested by its interrupt.
+
+        Raises ``RuntimeError`` when called from inside a running event loop.
+        """
+        coro = self.aresume(
+            run_id,
+            interrupt_value,
+            checkpointer=checkpointer,
+            max_iterations=max_iterations,
         )
+        try:
+            return asyncio.run(coro)
+        except RuntimeError:
+            coro.close()
+            raise
+
+    def resume_sync(
+        self,
+        run_id: str,
+        interrupt_value: object,
+        *,
+        checkpointer: CheckpointStore[StateT],
+        max_iterations: int = _MAX_ITERATIONS_DEFAULT,
+    ) -> Run[StateT]:
+        """Resume a paused run synchronously even inside a running event loop.
+
+        With no event loop running this behaves like :meth:`resume`. When a
+        loop is already running (e.g. inside a FastAPI handler or an async
+        node), the resumed graph runs to completion on a fresh event loop in
+        a worker thread and this method blocks until it finishes.
+        """
+        coro = self.aresume(
+            run_id,
+            interrupt_value,
+            checkpointer=checkpointer,
+            max_iterations=max_iterations,
+        )
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+
+        result: Run[StateT] | None = None
+        error: BaseException | None = None
+
+        def target() -> None:
+            nonlocal result, error
+            try:
+                result = asyncio.run(coro)
+            except BaseException as exc:
+                error = exc
+
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+        thread.join()
+        if error is not None:
+            raise error
+        assert result is not None
+        return result
 
     async def aresume(
         self,
@@ -299,6 +408,16 @@ def validate(graph: Graph[StateT]) -> None:
         raise GraphCompileError(
             f"Node(s) {sorted(ambiguous)} have multiple unconditional outgoing "
             "edges; use add_conditional_edges() for branching."
+        )
+
+    parallel_degree = Counter(par_edge.source for par_edge in graph.parallel_edges)
+    duplicated_parallel = {
+        source for source, count in parallel_degree.items() if count > 1
+    }
+    if duplicated_parallel:
+        raise GraphCompileError(
+            f"Node(s) {sorted(duplicated_parallel)} have more than one parallel "
+            "fan-out; use a single add_parallel_edges() call with all targets."
         )
 
     reachable = _reachable(

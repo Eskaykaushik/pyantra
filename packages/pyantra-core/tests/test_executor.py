@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import State
 
 from pyantra import Graph, NodeExecutionError, RunStatus
@@ -168,3 +169,44 @@ def test_wrong_return_type_fails_run(graph: Graph[State]) -> None:
     assert result.status == RunStatus.FAILED
     assert result.error is not None
     assert "State" in result.error
+
+
+def test_run_sync_without_running_loop(graph: Graph[State]) -> None:
+    @graph.node
+    def a(state: State) -> State:
+        state.value += 1
+        return state
+
+    graph.set_entry_point(a)
+
+    result = graph.compile().run_sync(State(value=1))
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.state is not None
+    assert result.state.value == 2
+
+
+async def test_run_inside_running_loop_raises(graph: Graph[State]) -> None:
+    @graph.node
+    def a(state: State) -> State:
+        return state
+
+    graph.set_entry_point(a)
+
+    with pytest.raises(RuntimeError, match="running event loop"):
+        graph.compile().run(State())
+
+
+async def test_run_sync_inside_running_loop(graph: Graph[State]) -> None:
+    @graph.node
+    def a(state: State) -> State:
+        state.value += 1
+        return state
+
+    graph.set_entry_point(a)
+
+    result = graph.compile().run_sync(State(value=1))
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.state is not None
+    assert result.state.value == 2

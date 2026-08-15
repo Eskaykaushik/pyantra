@@ -12,7 +12,7 @@ jobs:
     name: Build distributions
     runs-on: ubuntu-latest
     env:
-      RELEASE_PACKAGES: "pyantra"
+      RELEASE_PACKAGES: "pyantra pyantra-guard"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

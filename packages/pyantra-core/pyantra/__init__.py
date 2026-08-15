@@ -3,7 +3,10 @@
 from pyantra.checkpoint import (
     Checkpoint,
     CheckpointStore,
+    JsonSerializer,
     MemoryCheckpointStore,
+    PickleSerializer,
+    Serializer,
     SQLiteCheckpointStore,
 )
 from pyantra.graph.edge import END
@@ -49,6 +52,7 @@ __all__ = [
     "GraphExecutionError",
     "GraphInterrupt",
     "InvalidRouteError",
+    "JsonSerializer",
     "LLM",
     "LLMResponse",
     "MaxIterationsError",
@@ -60,12 +64,14 @@ __all__ = [
     "NodeExecutionError",
     "NodeTimeoutError",
     "NonRetryableError",
+    "PickleSerializer",
     "PyantraError",
     "RetryExhaustedError",
     "Run",
     "RunEvent",
     "RunStatus",
     "SQLiteCheckpointStore",
+    "Serializer",
     "Usage",
     "UsageTracker",
     "compute_delay",

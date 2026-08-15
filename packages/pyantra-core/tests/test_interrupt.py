@@ -142,6 +142,47 @@ async def test_interrupt_async() -> None:
     assert resumed.state.decision == "answer"
 
 
+async def test_resume_inside_running_loop_raises() -> None:
+    store: MemoryCheckpointStore[ApprovalState] = MemoryCheckpointStore()
+    graph = Graph(ApprovalState)
+
+    @graph.node
+    def review(state: ApprovalState) -> dict[str, str]:
+        decision = interrupt("approve")
+        return {"decision": decision}
+
+    graph.set_entry_point(review)
+    app = graph.compile()
+
+    run = await app.arun(ApprovalState(), checkpointer=store, run_id="resume-loop")
+    assert run.status == RunStatus.PAUSED
+
+    with pytest.raises(RuntimeError, match="running event loop"):
+        app.resume("resume-loop", "yes", checkpointer=store)
+
+
+async def test_resume_sync_inside_running_loop() -> None:
+    store: MemoryCheckpointStore[ApprovalState] = MemoryCheckpointStore()
+    graph = Graph(ApprovalState)
+
+    @graph.node
+    def review(state: ApprovalState) -> dict[str, str]:
+        decision = interrupt("approve")
+        return {"decision": decision}
+
+    graph.set_entry_point(review)
+    app = graph.compile()
+
+    run = await app.arun(ApprovalState(), checkpointer=store, run_id="resume-sync")
+    assert run.status == RunStatus.PAUSED
+
+    resumed = app.resume_sync("resume-sync", "yes", checkpointer=store)
+
+    assert resumed.status == RunStatus.COMPLETED
+    assert resumed.state is not None
+    assert resumed.state.decision == "yes"
+
+
 def test_interrupt_events_include_node_interrupted() -> None:
     store: MemoryCheckpointStore[ApprovalState] = MemoryCheckpointStore()
     graph = Graph(ApprovalState)

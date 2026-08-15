@@ -111,6 +111,27 @@ def test_mixed_normal_and_conditional(graph: Graph[State]) -> None:
         graph.compile()
 
 
+def test_duplicate_parallel_fanout_is_rejected(graph: Graph[State]) -> None:
+    @graph.node
+    def a(state: State) -> State:
+        return state
+
+    @graph.node
+    def b(state: State) -> State:
+        return state
+
+    @graph.node
+    def c(state: State) -> State:
+        return state
+
+    graph.set_entry_point(a)
+    graph.add_parallel_edges(a, b)
+    graph.add_parallel_edges(a, c)
+
+    with pytest.raises(GraphCompileError, match="more than one parallel"):
+        graph.compile()
+
+
 def test_duplicate_node_name(graph: Graph[State]) -> None:
     @graph.node(name="same")
     def a(state: State) -> State:
