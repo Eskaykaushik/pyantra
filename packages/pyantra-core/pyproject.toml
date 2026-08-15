@@ -23,6 +23,10 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+mcp = ["mcp>=1.0"]
+dbos = ["dbos>=2.0"]
+
 [project.urls]
 Homepage = "https://github.com/Eskaykaushik/pyantra"
 Repository = "https://github.com/Eskaykaushik/pyantra"

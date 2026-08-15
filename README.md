@@ -373,6 +373,124 @@ run are supported; each `resume()` answers the most recent one.
 
 ---
 
+## Integrations
+
+pyantra speaks the surrounding agent ecosystem: MCP servers, A2A peers, and
+durable execution frameworks like DBOS. A2A needs nothing extra; MCP and DBOS
+are optional extras.
+
+### Model Context Protocol (MCP)
+
+Expose tools from any MCP server as graph nodes — stdio and streamable-HTTP
+servers, real or mocked:
+
+```bash
+pip install 'pyantra[mcp]'
+```
+
+```python
+import asyncio
+from dataclasses import dataclass, field
+
+from pyantra import END, Graph, McpClient, McpToolNode
+
+@dataclass
+class State:
+    url: str = ""
+    results: list[str] = field(default_factory=list)
+
+async def main():
+    client = await McpClient(command="uvx", args=["mcp-server-fetch"]).connect()
+    try:
+        graph = Graph(State)
+        tool = McpToolNode(
+            name="fetch",
+            client=client,
+            tool_name="fetch",
+            result_field="results",
+            args_from={"url": "url"},
+        )
+        graph.add_node(tool)
+        graph.set_entry_point(tool)
+        graph.add_edge(tool, END)
+        run = await graph.compile().arun(State(url="https://example.com"))
+        print(run.state.results)
+    finally:
+        await client.close()
+
+asyncio.run(main())
+```
+
+`McpToolNode` pulls the tool's JSON schema from the server lazily and validates
+each call's arguments against it.
+
+### Agent-to-Agent (A2A)
+
+Delegate work to remote agents over the A2A protocol. pyantra ships a
+stdlib-only JSON-RPC client plus `DelegateNode`, which hands off a task, waits
+out its lifecycle, and merges the agent's reply into state. No extra install:
+
+```python
+from pyantra import A2aClient, DelegateNode, END, Graph
+from pyantra.a2a import Message, TextPart
+
+@dataclass
+class State:
+    prompt: str = ""
+    answer: str = ""
+
+client = A2aClient(agent_url="https://agent.example.com/rpc")
+graph = Graph(State)
+delegate = DelegateNode(
+    name="translate",
+    client=client,
+    result_field="answer",
+    payload_from=lambda s: Message(role="user", parts=[TextPart(text=s.prompt)]),
+)
+graph.add_node(delegate)
+graph.set_entry_point(delegate)
+graph.add_edge(delegate, END)
+
+run = graph.compile().run(State(prompt="hello"))
+print(run.state.answer)
+```
+
+When the remote agent asks for input (`input-required`), the run pauses through
+pyantra's normal `interrupt()` machinery — set `task_id_field` to keep the
+remote task id in state, and `app.resume(run_id, value, checkpointer=...)`
+continues the same task. `A2aClient` is a duck-typed protocol, so alternate
+transports (and test doubles) can stand in.
+
+### DBOS durable checkpoints
+
+Store checkpoints through a DBOS Transact datasource, so writes ride DBOS's
+durability and exactly-once layer:
+
+```bash
+pip install 'pyantra[dbos]'
+```
+
+```python
+from dbos import SQLAlchemyDatasource
+from pyantra import DBOSCheckpointStore, Graph
+
+datasource = SQLAlchemyDatasource.create("sqlite:///app.db")
+store = DBOSCheckpointStore(datasource=datasource)  # or url="sqlite:///app.db"
+
+app = graph.compile()
+run = app.run(state, checkpointer=store, run_id="orders-42")
+assert run.status == RunStatus.PAUSED
+
+resumed = app.resume("orders-42", "approved", checkpointer=store)
+assert resumed.status == RunStatus.COMPLETED
+```
+
+`DBOSCheckpointStore` stores checkpoints in a `pyantra_checkpoints` table and
+runs every operation as a datasource transaction — when your graph runs inside
+a `@DBOS.workflow`, its checkpoints get DBOS's exactly-once guarantees.
+
+---
+
 ## Observability
 
 Every run returns a `Run` object with a structured event trace — no logging

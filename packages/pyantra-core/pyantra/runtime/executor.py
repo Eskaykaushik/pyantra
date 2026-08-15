@@ -339,12 +339,20 @@ class Executor(Generic[StateT]):
         resume_at: str,
         state: StateT,
     ) -> None:
+        # Preserve pending interruptions: a resumed run re-reads the checkpoint
+        # while its node executes, so wiping the history here would lose the
+        # interrupt that prompted the resume.
+        pending: list[tuple[str, object]] = []
+        existing = checkpointer.load(run.run_id)
+        if existing is not None:
+            pending = list(existing.interrupts)
         checkpointer.save(
             Checkpoint(
                 run_id=run.run_id,
                 resume_at=resume_at,
                 state=state,
                 events=list(run.events),
+                interrupts=pending,
             )
         )
 

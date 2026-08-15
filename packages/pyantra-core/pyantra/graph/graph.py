@@ -16,6 +16,7 @@ from pyantra.state.state import StateT
 
 NodeLike: TypeAlias = Node[StateT] | str
 NodeTarget: TypeAlias = Node[StateT] | str | _End
+NodeOrFn: TypeAlias = Node[StateT] | NodeFn[StateT]
 
 
 class Graph(Generic[StateT]):
@@ -80,18 +81,22 @@ class Graph(Generic[StateT]):
 
     def add_node(
         self,
-        fn: NodeFn[StateT],
+        fn: NodeOrFn[StateT],
         *,
         name: str | None = None,
         config: NodeConfig | None = None,
     ) -> Node[StateT]:
-        """Register a function as a node and return its ``Node``."""
+        """Register a function or ``Node`` as a node and return it.
+
+        Passing an existing ``Node`` (e.g. a tool node) registers that node
+        object directly, keeping its identity and validation hooks.
+        """
         return self._register(fn, name=name, config=config)
 
     @overload
     def node(
         self,
-        fn: NodeFn[StateT],
+        fn: NodeOrFn[StateT],
         *,
         name: str | None = None,
         config: NodeConfig | None = None,
@@ -104,16 +109,16 @@ class Graph(Generic[StateT]):
         *,
         name: str | None = None,
         config: NodeConfig | None = None,
-    ) -> Callable[[NodeFn[StateT]], Node[StateT]]: ...
+    ) -> Callable[[NodeOrFn[StateT]], Node[StateT]]: ...
 
     def node(
         self,
-        fn: NodeFn[StateT] | None = None,
+        fn: NodeOrFn[StateT] | None = None,
         *,
         name: str | None = None,
         config: NodeConfig | None = None,
-    ) -> Node[StateT] | Callable[[NodeFn[StateT]], Node[StateT]]:
-        """Decorator to register a function as a node.
+    ) -> Node[StateT] | Callable[[NodeOrFn[StateT]], Node[StateT]]:
+        """Decorator to register a function (or ``Node``) as a node.
 
         Usable as ``@graph.node`` or ``@graph.node(name="...", config=...)``.
         """
@@ -123,11 +128,24 @@ class Graph(Generic[StateT]):
 
     def _register(
         self,
-        fn: NodeFn[StateT],
+        fn: NodeOrFn[StateT],
         *,
         name: str | None = None,
         config: NodeConfig | None = None,
     ) -> Node[StateT]:
+        if isinstance(fn, Node):
+            if name is not None and name != fn.name:
+                raise GraphCompileError(
+                    f"Registered name {name!r} does not match node name "
+                    f"{fn.name!r}."
+                )
+            node = fn
+            if config is not None:
+                node.config = config
+            if node.name in self._nodes:
+                raise GraphCompileError(f"Duplicate node name: {node.name!r}.")
+            self._nodes[node.name] = node
+            return node
         node_name = name if name is not None else getattr(fn, "__name__", None)
         if node_name is None:
             raise GraphCompileError(

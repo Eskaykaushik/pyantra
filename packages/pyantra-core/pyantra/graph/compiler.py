@@ -327,6 +327,9 @@ def validate(graph: Graph[StateT]) -> None:
     if entry not in nodes:
         raise GraphCompileError(f"Entry point {entry!r} is not a registered node.")
 
+    for node in nodes.values():
+        node.validate(graph.state_type)
+
     for edge in graph.edges:
         if edge.source not in nodes:
             raise GraphCompileError(

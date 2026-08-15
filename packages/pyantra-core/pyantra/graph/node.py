@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Generic, TypeAlias
+from typing import Any, Generic, TypeAlias
 
 from pyantra.reliability.circuit_breaker import CircuitBreaker
 from pyantra.reliability.retry import Backoff
@@ -61,6 +61,15 @@ class Node(Generic[StateT]):
         self, state: StateT
     ) -> StateT | StateUpdate | None | Awaitable[StateT | StateUpdate | None]:
         return self.fn(state)
+
+    def validate(self, state_type: type[Any]) -> None:
+        """Compile-time validation hook; specialized nodes may override.
+
+        Called once during :meth:`pyantra.graph.Graph.compile` with the
+        graph's state type so a node can fail early (raising
+        :class:`~pyantra.runtime.errors.GraphCompileError`) instead of at
+        runtime.
+        """
 
     def __repr__(self) -> str:
         return f"Node({self.name!r})"
