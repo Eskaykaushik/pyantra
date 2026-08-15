@@ -348,12 +348,12 @@ wheels = [
 
 [[package]]
 name = "pyantra"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/pyantra-core" }
 
 [[package]]
 name = "pyantra-eval"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/pyantra-eval" }
 dependencies = [
     { name = "pyantra" },
@@ -368,7 +368,7 @@ requires-dist = [
 
 [[package]]
 name = "pyantra-guard"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/pyantra-guard" }
 dependencies = [
     { name = "pyantra" },
@@ -379,22 +379,22 @@ requires-dist = [{ name = "pyantra", editable = "packages/pyantra-core" }]
 
 [[package]]
 name = "pyantra-memory"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/pyantra-memory" }
 
 [[package]]
 name = "pyantra-otel"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/pyantra-otel" }
 
 [[package]]
 name = "pyantra-studio"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/pyantra-studio" }
 
 [[package]]
 name = "pyantra-workspace"
-version = "0.4.0"
+version = "0.5.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]
