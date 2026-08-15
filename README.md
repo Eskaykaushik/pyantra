@@ -53,7 +53,7 @@ integrations opt in only when you install them.
 | --- | --- |
 | [`pyantra`](packages/pyantra-core/README.md) | Core workflow engine — graphs, reliability, checkpoints, LLM abstraction. |
 | `pyantra-memory` | Vector stores, RAG, and caching. *(planned)* |
-| `pyantra-eval` | Trajectory evals, LLM judges, pytest plugin. *(planned)* |
+| [`pyantra-eval`](packages/pyantra-eval/README.md) | Trajectory evals, LLM judges, pytest plugin. |
 | `pyantra-guard` | Runtime type guards, LLM budget caps, PII redaction. |
 | `pyantra-otel` | OpenTelemetry & tracing exporters. *(planned)* |
 | `pyantra-studio` | Local dev server & visual web debugger. *(planned)* |
@@ -489,7 +489,7 @@ All packages share one version and one tag. To release:
 - LLM caching and model tiering
 - Multi-agent delegation and scoped handoffs
 - `interrupt()` defaults and tool/approval-specific helpers
-- Deterministic replay and trace-based regression testing
+- Deterministic replay of traces
 
 ---
 

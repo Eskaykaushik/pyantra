@@ -9,7 +9,27 @@ description = "Trajectory evaluation, LLM judges, and a pytest plugin for Pyantr
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = []
+authors = [{ name = "Eskay Kaushik", email = "eskaykaushik14@gmail.com" }]
+keywords = ["ai", "agents", "workflows", "eval", "evaluation", "judge", "pytest"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = ["pyantra", "pytest>=7.4"]
+
+[project.urls]
+Homepage = "https://github.com/Eskaykaushik/pyantra"
+Repository = "https://github.com/Eskaykaushik/pyantra"
+
+[project.entry-points.pytest11]
+pyantra_eval = "pyantra_eval.pytest_plugin"
 
 [tool.hatch.build.targets.wheel]
 packages = ["pyantra_eval"]
+include = ["pyantra_eval/py.typed"]

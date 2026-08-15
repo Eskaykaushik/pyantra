@@ -355,11 +355,27 @@ source = { editable = "packages/pyantra-core" }
 name = "pyantra-eval"
 version = "0.4.0"
 source = { editable = "packages/pyantra-eval" }
+dependencies = [
+    { name = "pyantra" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pyantra", editable = "packages/pyantra-core" },
+    { name = "pytest", specifier = ">=7.4" },
+]
 
 [[package]]
 name = "pyantra-guard"
 version = "0.4.0"
 source = { editable = "packages/pyantra-guard" }
+dependencies = [
+    { name = "pyantra" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pyantra", editable = "packages/pyantra-core" }]
 
 [[package]]
 name = "pyantra-memory"

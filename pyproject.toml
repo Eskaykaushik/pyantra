@@ -10,6 +10,14 @@ package = false
 [tool.uv.workspace]
 members = ["packages/*"]
 
+[tool.uv.sources]
+pyantra = { workspace = true }
+pyantra-eval = { workspace = true }
+pyantra-guard = { workspace = true }
+pyantra-memory = { workspace = true }
+pyantra-otel = { workspace = true }
+pyantra-studio = { workspace = true }
+
 [dependency-groups]
 dev = [
     "pytest>=7.4",
@@ -22,7 +30,7 @@ dev = [
 target-version = "py310"
 line-length = 88
 include = ["*.py", "*.pyi"]
-src = ["packages/pyantra-core"]
+src = ["packages/pyantra-core", "packages/pyantra-eval"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
@@ -34,4 +42,8 @@ warn_unused_configs = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["packages/pyantra-core/tests", "packages/pyantra-guard/tests"]
+testpaths = [
+    "packages/pyantra-core/tests",
+    "packages/pyantra-guard/tests",
+    "packages/pyantra-eval/tests",
+]
