@@ -7,7 +7,21 @@
   not hold.
 """
 
-from pyantra_eval.judge import DEFAULT_PROMPT, JudgeResult, LLMJudge
+from pyantra_eval.catalog import (
+    AnswerRelevancyMetric,
+    FaithfulnessMetric,
+    GEvalMetric,
+    HallucinationMetric,
+    TaskCompletionMetric,
+    ToolSelectionMetric,
+)
+from pyantra_eval.judge import (
+    DEFAULT_PROMPT,
+    DiskCache,
+    JudgeResult,
+    LLMJudge,
+    VerdictCache,
+)
 from pyantra_eval.metrics import (
     AbsentExpectation,
     CallableExpectation,
@@ -17,6 +31,7 @@ from pyantra_eval.metrics import (
     Evaluator,
     InterruptExpectation,
     JudgedExpectation,
+    Metric,
     OrderExpectation,
     StatusExpectation,
     StepExpectation,
@@ -35,23 +50,46 @@ from pyantra_eval.metrics import (
     expect_visited,
 )
 from pyantra_eval.pytest_plugin import PyantraEvalCollector
+from pyantra_eval.suite import (
+    AppFn,
+    EvalCase,
+    EvalDataset,
+    SuiteReport,
+    SuiteResult,
+    SuiteRunner,
+)
 
 __all__ = [
     "AbsentExpectation",
+    "AnswerRelevancyMetric",
+    "AppFn",
     "CallableExpectation",
     "DEFAULT_PROMPT",
+    "DiskCache",
     "ErrorExpectation",
+    "EvalCase",
+    "EvalDataset",
     "EvalReport",
     "EvalResult",
     "Evaluator",
+    "FaithfulnessMetric",
+    "GEvalMetric",
+    "HallucinationMetric",
     "InterruptExpectation",
     "JudgeResult",
     "JudgedExpectation",
     "LLMJudge",
+    "Metric",
     "OrderExpectation",
     "PyantraEvalCollector",
     "StatusExpectation",
     "StepExpectation",
+    "SuiteReport",
+    "SuiteResult",
+    "SuiteRunner",
+    "TaskCompletionMetric",
+    "ToolSelectionMetric",
+    "VerdictCache",
     "VisitExpectation",
     "evaluate",
     "expect_completed",

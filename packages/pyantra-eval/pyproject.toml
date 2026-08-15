@@ -30,6 +30,9 @@ Repository = "https://github.com/Eskaykaushik/pyantra"
 [project.entry-points.pytest11]
 pyantra_eval = "pyantra_eval.pytest_plugin"
 
+[project.scripts]
+pyantra-eval = "pyantra_eval.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["pyantra_eval"]
 include = ["pyantra_eval/py.typed"]

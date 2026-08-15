@@ -13,18 +13,37 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeAlias
 
-from pyantra import Run, RunStatus
+from pyantra import Run, RunStatus, Usage
 from pyantra_eval.judge import LLMJudge
 
 EvalRun: TypeAlias = Run[Any]
 
 @dataclass(frozen=True)
 class EvalResult:
-    """The verdict of a single evaluator against a run."""
+    """The verdict of a single evaluator against a run.
+
+    ``score`` and ``max_score`` are ``None`` for purely boolean expectations
+    unless they opted into scoring; ``score`` is clamped to ``[0, max_score]``
+    when both are set. ``passed`` drives pass/fail regardless of ``score``.
+    ``usage`` records LLM cost when the verdict was produced by a judge.
+    """
 
     name: str
     passed: bool
     message: str = ""
+    score: float | None = None
+    max_score: float | None = None
+    usage: Usage | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "passed": self.passed,
+            "message": self.message,
+            "score": self.score,
+            "max_score": self.max_score,
+            "usage": _usage_to_dict(self.usage) if self.usage is not None else None,
+        }
 
 
 class Evaluator(Protocol):
@@ -35,6 +54,43 @@ class Evaluator(Protocol):
     def evaluate(self, run: EvalRun) -> EvalResult:
         """Return the verdict for ``run``."""
         ...
+
+
+class Metric(Evaluator, Protocol):
+    """An :class:`Evaluator` that scores a run against a threshold.
+
+    ``threshold`` is ``None`` when the metric is used as a plain assertion;
+    ``aggregation`` describes how scores are combined across a suite.
+    """
+
+    threshold: float | None
+    aggregation: str
+
+    def evaluate(self, run: EvalRun) -> EvalResult:
+        """Return the verdict and score for ``run``."""
+        ...
+
+
+def _binary_result(name: str, passed: bool, message: str = "") -> EvalResult:
+    """Build a scored result for a boolean expectation (0/1 on a 1 scale)."""
+    return EvalResult(
+        name=name,
+        passed=passed,
+        message=message,
+        score=1.0 if passed else 0.0,
+        max_score=1.0,
+    )
+
+
+def _usage_to_dict(usage: Usage) -> dict[str, object]:
+    """Serialize :class:`~pyantra.Usage` for reports."""
+    return {
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_tokens": usage.cache_tokens,
+        "cost": usage.cost,
+        "model": usage.model,
+    }
 
 
 @dataclass(frozen=True)
@@ -53,17 +109,39 @@ class EvalReport:
         """The results that did not pass."""
         return [result for result in self.results if not result.passed]
 
+    @property
+    def scores(self) -> list[float]:
+        """The scores of results that recorded one."""
+        return [result.score for result in self.results if result.score is not None]
+
+    @property
+    def avg_score(self) -> float | None:
+        """Mean score across scored results, or ``None`` if there are none."""
+        scores = self.scores
+        return sum(scores) / len(scores) if scores else None
+
+    def pass_rate(self) -> float:
+        """Fraction of results that passed; 1.0 when there are no results."""
+        if not self.results:
+            return 1.0
+        return sum(result.passed for result in self.results) / len(self.results)
+
+    @property
+    def total_usage(self) -> Usage:
+        """Aggregate LLM usage across scored results (cached hits cost 0)."""
+        total = Usage()
+        for result in self.results:
+            if result.usage is not None:
+                total = total + result.usage
+        return total
+
     def to_dict(self) -> dict[str, object]:
         return {
             "passed": self.passed,
-            "results": [
-                {
-                    "name": result.name,
-                    "passed": result.passed,
-                    "message": result.message,
-                }
-                for result in self.results
-            ],
+            "pass_rate": self.pass_rate(),
+            "avg_score": self.avg_score,
+            "total_usage": _usage_to_dict(self.total_usage),
+            "results": [result.to_dict() for result in self.results],
         }
 
 
@@ -81,7 +159,7 @@ class StatusExpectation:
             if passed
             else f"expected status {self.expected.value!r}, got {run.status.value!r}"
         )
-        return EvalResult(self.name, passed, message)
+        return _binary_result(self.name, passed, message)
 
 
 @dataclass(frozen=True)
@@ -98,23 +176,23 @@ class ErrorExpectation:
 
     def evaluate(self, run: EvalRun) -> EvalResult:
         if run.status is not RunStatus.FAILED:
-            return EvalResult(
+            return _binary_result(
                 self.name, False, f"expected failure, got {run.status.value!r}"
             )
         error = run.error or ""
         if self.contains is not None and self.contains not in error:
-            return EvalResult(
+            return _binary_result(
                 self.name,
                 False,
                 f"error {error!r} does not contain {self.contains!r}",
             )
         if self.pattern is not None and not re.search(self.pattern, error):
-            return EvalResult(
+            return _binary_result(
                 self.name,
                 False,
                 f"error {error!r} does not match pattern {self.pattern!r}",
             )
-        return EvalResult(self.name, True)
+        return _binary_result(self.name, True)
 
 
 @dataclass(frozen=True)
@@ -134,7 +212,7 @@ class VisitExpectation:
             else f"expected node {self.node!r} at least {self.at_least} time(s), "
             f"saw {count}"
         )
-        return EvalResult(self.name, passed, message)
+        return _binary_result(self.name, passed, message)
 
 
 @dataclass(frozen=True)
@@ -148,7 +226,7 @@ class AbsentExpectation:
         count = sum(1 for event in run.node_events if event.node == self.node)
         passed = count == 0
         message = "" if passed else f"node {self.node!r} was visited {count} time(s)"
-        return EvalResult(self.name, passed, message)
+        return _binary_result(self.name, passed, message)
 
 
 @dataclass(frozen=True)
@@ -171,7 +249,7 @@ class OrderExpectation:
             message = (
                 f"expected nodes {list(self.nodes)!r} in order, got {visited!r}{detail}"
             )
-        return EvalResult(self.name, passed, message)
+        return _binary_result(self.name, passed, message)
 
 
 @dataclass(frozen=True)
@@ -189,7 +267,7 @@ class StepExpectation:
             if passed
             else f"expected at most {self.limit} node event(s), saw {count}"
         )
-        return EvalResult(self.name, passed, message)
+        return _binary_result(self.name, passed, message)
 
 
 @dataclass(frozen=True)
@@ -205,7 +283,7 @@ class InterruptExpectation:
             if passed
             else f"expected interrupt, got status {run.status.value!r}"
         )
-        return EvalResult(self.name, passed, message)
+        return _binary_result(self.name, passed, message)
 
 
 @dataclass(frozen=True)
@@ -225,7 +303,7 @@ class CallableExpectation:
         detail = (
             self.message(run) if callable(self.message) else str(self.message)
         )
-        return EvalResult(self.name, passed, "" if passed else detail)
+        return _binary_result(self.name, passed, "" if passed else detail)
 
 
 @dataclass(frozen=True)
@@ -251,7 +329,14 @@ class JudgedExpectation:
                 verdict.message
                 or f"score {verdict.score:.2f}: {verdict.rationale}"
             )
-        return EvalResult(self.name, passed, message)
+        return EvalResult(
+            self.name,
+            passed,
+            message,
+            score=verdict.score,
+            max_score=self.judge.max_score,
+            usage=verdict.usage,
+        )
 
 
 def _state_text(run: EvalRun) -> str:
@@ -348,6 +433,7 @@ __all__ = [
     "Evaluator",
     "InterruptExpectation",
     "JudgedExpectation",
+    "Metric",
     "OrderExpectation",
     "StatusExpectation",
     "StepExpectation",
