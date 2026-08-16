@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import operator
 from dataclasses import dataclass, field
+from typing import Annotated
 
 import pytest
 
@@ -21,6 +24,12 @@ class ApprovalState:
     draft: str = ""
     decision: str = ""
     history: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SkipState:
+    out: Annotated[list[str], operator.add] = field(default_factory=list)
+    decision: str = ""
 
 
 def test_interrupt_pauses_run_with_payload() -> None:
@@ -286,8 +295,6 @@ def test_sequential_interrupts_at_multiple_nodes() -> None:
 
 
 def test_interrupt_inside_parallel_branch() -> None:
-    import operator
-    from typing import Annotated
 
     @dataclass
     class ParState:
@@ -327,3 +334,155 @@ def test_interrupt_inside_parallel_branch() -> None:
     assert resumed.state is not None
     assert resumed.state.decision == "yes"
     assert resumed.state.out == ["a"]
+
+
+async def test_interrupt_cancels_siblings_and_resume_reruns_them() -> None:
+    @dataclass
+    class ParState:
+        out: Annotated[list[str], operator.add] = field(default_factory=list)
+        decision: str = ""
+
+    calls = {"slow": 0}
+    store: MemoryCheckpointStore[ParState] = MemoryCheckpointStore()
+    graph = Graph(ParState)
+
+    @graph.node
+    def start(state: ParState) -> ParState:
+        return state
+
+    @graph.node
+    async def slow(state: ParState) -> dict[str, list[str]]:
+        await asyncio.sleep(0.2)
+        calls["slow"] += 1
+        return {"out": ["slow"]}
+
+    @graph.node
+    def ask(state: ParState) -> dict[str, str]:
+        decision = interrupt("go?")
+        return {"decision": decision}
+
+    graph.set_entry_point(start)
+    graph.add_parallel_edges(start, slow, ask)
+    app = graph.compile()
+
+    run = await app.arun(ParState(), checkpointer=store, run_id="rerun")
+
+    assert run.status == RunStatus.PAUSED
+    assert calls["slow"] == 0, "in-flight sibling was not cancelled on interrupt"
+    event_names = [e.event for e in run.events]
+    assert event_names[-1] == "run.paused"
+    assert "node.completed" not in event_names[
+        event_names.index("run.paused") + 1 :
+    ]
+
+    resumed = await app.aresume("rerun", "yes", checkpointer=store)
+
+    assert resumed.status == RunStatus.COMPLETED
+    assert resumed.state is not None
+    assert resumed.state.decision == "yes"
+    assert resumed.state.out == ["slow"]
+    assert calls["slow"] == 1, "cancelled sibling should run exactly once on resume"
+
+
+def test_parallel_interrupt_resume_skips_completed_sibling() -> None:
+    @dataclass
+    class ParState:
+        out: Annotated[list[str], operator.add] = field(default_factory=list)
+        decision: str = ""
+
+    calls = {"side": 0}
+    store: MemoryCheckpointStore[ParState] = MemoryCheckpointStore()
+    graph = Graph(ParState)
+
+    @graph.node
+    def start(state: ParState) -> ParState:
+        return state
+
+    @graph.node
+    def side_effect(state: ParState) -> dict[str, list[str]]:
+        calls["side"] += 1
+        return {"out": ["result"]}
+
+    @graph.node
+    def ask(state: ParState) -> dict[str, str]:
+        decision = interrupt("go?")
+        return {"decision": decision}
+
+    @graph.node
+    def finish(state: ParState) -> ParState:
+        return state
+
+    graph.set_entry_point(start)
+    graph.add_parallel_edges(start, side_effect, ask, join=finish)
+    app = graph.compile()
+    run_id = "skip-completed"
+
+    run = app.run(ParState(), checkpointer=store, run_id=run_id)
+
+    assert run.status == RunStatus.PAUSED
+    assert calls["side"] == 1
+    assert run.state is not None
+    assert run.state.out == ["result"], "completed sibling result was not preserved"
+
+    checkpoint = store.load(run_id)
+    assert checkpoint is not None
+    assert checkpoint.parallel is not None
+    assert checkpoint.parallel.completed == ("side_effect",)
+    assert checkpoint.parallel.pending == ("ask",)
+    assert checkpoint.parallel.interrupted == "ask"
+
+    resumed = app.resume(run_id, "yes", checkpointer=store)
+
+    assert resumed.status == RunStatus.COMPLETED
+    assert resumed.state is not None
+    assert resumed.state.decision == "yes"
+    assert resumed.state.out == ["result"]
+    assert calls["side"] == 1, "completed sibling re-ran on resume"
+    side_completed = [
+        e
+        for e in resumed.events
+        if e.event == "node.completed" and e.node == "side_effect"
+    ]
+    assert len(side_completed) == 1
+
+
+def test_parallel_interrupt_resume_skips_completed_sibling_sqlite(tmp_path) -> None:
+    from pyantra import SQLiteCheckpointStore
+
+    calls = {"side": 0}
+    store: SQLiteCheckpointStore[SkipState] = SQLiteCheckpointStore(
+        str(tmp_path / "par-skip.db")
+    )
+    graph = Graph(SkipState)
+
+    @graph.node
+    def start(state: SkipState) -> SkipState:
+        return state
+
+    @graph.node
+    def side_effect(state: SkipState) -> dict[str, list[str]]:
+        calls["side"] += 1
+        return {"out": ["result"]}
+
+    @graph.node
+    def ask(state: SkipState) -> dict[str, str]:
+        decision = interrupt("go?")
+        return {"decision": decision}
+
+    graph.set_entry_point(start)
+    graph.add_parallel_edges(start, side_effect, ask)
+    app = graph.compile()
+
+    run = app.run(SkipState(), checkpointer=store, run_id="sqlite-skip")
+
+    assert run.status == RunStatus.PAUSED
+    assert calls["side"] == 1
+
+    resumed = app.resume("sqlite-skip", "yes", checkpointer=store)
+
+    assert resumed.status == RunStatus.COMPLETED
+    assert resumed.state is not None
+    assert resumed.state.decision == "yes"
+    assert resumed.state.out == ["result"]
+    assert calls["side"] == 1, "completed sibling re-ran on resume"
+    store.close()

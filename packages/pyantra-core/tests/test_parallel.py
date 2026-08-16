@@ -420,3 +420,53 @@ def test_parallel_events_include_branch_nodes() -> None:
     nodes = {event.node for event in result.events}
 
     assert "branch_a" in nodes
+
+
+def test_parallel_duplicate_target_fails_compile() -> None:
+    graph = Graph(PState)
+
+    @graph.node
+    def start(state: PState) -> PState:
+        return state
+
+    @graph.node
+    def leaf(state: PState) -> dict[str, list[str]]:
+        return {"results": ["x"]}
+
+    graph.set_entry_point(start)
+    graph.add_parallel_edges(start, leaf, leaf)
+
+    with pytest.raises(GraphCompileError, match="duplicate"):
+        graph.compile()
+
+
+async def test_parallel_failure_cancels_sibling_tasks() -> None:
+    graph = Graph(PState)
+    marker = {"slow": False}
+
+    @graph.node
+    def start(state: PState) -> PState:
+        return state
+
+    @graph.node
+    async def slow(state: PState) -> dict[str, list[str]]:
+        await asyncio.sleep(0.3)
+        marker["slow"] = True
+        return {"results": ["slow"]}
+
+    @graph.node
+    def boom(state: PState) -> PState:
+        raise RuntimeError("branch failed")
+
+    graph.set_entry_point(start)
+    graph.add_parallel_edges(start, slow, boom)
+
+    run = await graph.compile().arun(PState())
+
+    assert run.status == RunStatus.FAILED
+    assert not marker["slow"], "sibling kept running after the run failed"
+    event_names = [e.event for e in run.events]
+    assert event_names[-1] == "run.failed"
+    assert "node.completed" not in event_names[
+        event_names.index("run.failed") + 1 :
+    ]

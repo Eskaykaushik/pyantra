@@ -136,12 +136,33 @@ if __name__ == "__main__":
     main()
 ```
 
+## Failures and interrupts
+
+A branch that **fails** fails the whole run: the remaining in-flight branches
+are cancelled and awaited before the run reports `FAILED`, so no sibling keeps
+running (or emitting events) after the run has failed.
+
+A branch that calls [interrupt](human-in-the-loop.md) pauses the run. Siblings
+are cancelled, and the results of branches that **already completed** are merged
+into the checkpoint. Resuming later re-enters the fan-out and runs **only the
+branches that had not finished** — the interrupted branch and any in-flight
+siblings that were cancelled — so completed siblings are never re-run and their
+side effects are not duplicated:
+
+```python
+app.run(state, checkpointer=store, run_id="order-9")   # pauses inside a branch
+app.resume("order-9", "approved", checkpointer=store)   # only unfinished branches run
+```
+
+Only in-flight work is lost to cancellation (it is re-run on resume); work that
+completed is preserved in the checkpoint.
+
 ## Notes
 
-- `add_parallel_edges` requires at least one target (`GraphCompileError`
-  otherwise).
-- Branches run with `asyncio.gather`, so all branches must complete before the
-  join node runs.
+- `add_parallel_edges` requires at least one target and rejects duplicate
+  targets (`GraphCompileError` otherwise).
+- Branches run concurrently, and all branches must complete before the join
+  node runs — except when a branch fails or interrupts, which cancels the rest.
 - For async (`async def`) branches, no special handling is needed; sync
   branches run in the same event loop.
 - Reducers on the state type are what make merging deterministic — see

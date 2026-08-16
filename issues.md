@@ -67,6 +67,12 @@ in-place-copy pattern is broken.
 
 ## 2. Parallel fan-out orphans sibling branches on failure or interrupt
 
+**Status:** fixed — `_run_parallel` no longer uses bare `asyncio.gather`. It
+runs each branch as a named task and awaits them with
+`asyncio.wait(FIRST_EXCEPTION)`; on the first failure or interrupt the
+remaining tasks are cancelled and awaited before the exception propagates, so
+no sibling keeps executing or emits events after the run has failed/paused.
+
 When one parallel branch fails or interrupts, `asyncio.gather` in
 `_run_parallel` (`packages/pyantra-core/pyantra/runtime/executor.py`) propagates
 the exception immediately but does **not** cancel the sibling tasks. They keep
@@ -216,6 +222,13 @@ usage overstates what actually ran.
 
 ## 7. Resuming a parallel-branch interrupt replays the whole fan-out
 
+**Status:** fixed — checkpoints now record a `ParallelProgress` when a run
+pauses inside a parallel branch, with the merged results of branches that had
+already completed. `resume()` re-enters the fan-out and runs only the branches
+that had not finished, so completed siblings' side effects are not duplicated.
+(Failure resume still replays the fan-out from its source; see the note on
+issue 10.)
+
 Checkpoints are written only at node boundaries with `resume_at` set to the
 fan-out **source** node; no progress is recorded inside branches. So
 `app.resume()` after a pause that happened inside a parallel branch re-runs the
@@ -339,6 +352,14 @@ for failed runs.
 
 ## 10. Resuming a parallel-branch interrupt replays the whole fan-out and double-bills siblings
 
+**Status:** fixed — `aresume`'s resume position is no longer derived from
+`resume_at`. `arun` reads `checkpoint.parallel` (written by the executor when a
+branch interrupts) and resumes the fan-out at its pending branches, so the
+interrupt response reaches the interrupted branch and completed siblings are
+skipped. Known limitation: resuming a run that *failed* inside a parallel
+branch still replays the fan-out from its source (failure resume intentionally
+keeps the existing fail-fast replay semantics).
+
 `aresume` (`packages/pyantra-core/pyantra/graph/compiler.py`) computes the resume
 node from `checkpoint.interrupts[-1][0]`, but `Executor.arun`
 (`packages/pyantra-core/pyantra/runtime/executor.py`) then re-derives the actual
@@ -394,6 +415,10 @@ conditional, the interrupted branch could be skipped entirely and the resume
 value silently dropped, leaving the run paused.
 
 ## 11. Duplicate parallel targets are not validated
+
+**Status:** fixed — `validate` now rejects any fan-out that lists the same
+target more than once with a `GraphCompileError`, so the duplicate can no
+longer silently double-apply its reducer update.
 
 `Graph.add_parallel_edges` (`packages/pyantra-core/pyantra/graph/graph.py`) and
 `validate` (`packages/pyantra-core/pyantra/graph/compiler.py`) accept the same

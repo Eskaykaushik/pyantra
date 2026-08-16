@@ -18,7 +18,7 @@ import typing
 from abc import ABC, abstractmethod
 from typing import Any, Generic, cast, get_type_hints
 
-from pyantra.checkpoint.base import Checkpoint
+from pyantra.checkpoint.base import Checkpoint, ParallelProgress
 from pyantra.state.state import StateT
 
 
@@ -133,6 +133,7 @@ class JsonSerializer(Serializer[StateT]):
             "state": self._encode_state(checkpoint.state),
             "events": [event.to_dict() for event in checkpoint.events],
             "interrupts": [[node, payload] for node, payload in checkpoint.interrupts],
+            "parallel": _parallel_to_dict(checkpoint.parallel),
         }
         try:
             return json.dumps(body).encode("utf-8")
@@ -150,6 +151,7 @@ class JsonSerializer(Serializer[StateT]):
             state=self._decode_state(body["state"]),
             events=[_reconstruct_event(event) for event in body["events"]],
             interrupts=[(node, payload) for node, payload in body["interrupts"]],
+            parallel=_parallel_from_dict(body.get("parallel")),
         )
 
     def _encode_state(self, state: StateT) -> dict[str, Any]:
@@ -197,6 +199,34 @@ def _reconstruct_event(data: dict[str, Any]) -> Any:
     if isinstance(usage, dict):
         payload["usage"] = Usage(**usage)
     return RunEvent(**payload)
+
+
+def _parallel_to_dict(progress: ParallelProgress | None) -> dict[str, Any] | None:
+    """Encode ``ParallelProgress`` for JSON (lists, not tuples)."""
+    if progress is None:
+        return None
+    return {
+        "source": progress.source,
+        "targets": list(progress.targets),
+        "join": progress.join,
+        "completed": list(progress.completed),
+        "pending": list(progress.pending),
+        "interrupted": progress.interrupted,
+    }
+
+
+def _parallel_from_dict(data: dict[str, Any] | None) -> ParallelProgress | None:
+    """Rebuild ``ParallelProgress`` from JSON, tolerating older checkpoints."""
+    if not data:
+        return None
+    return ParallelProgress(
+        source=data["source"],
+        targets=tuple(data["targets"]),
+        join=data["join"],
+        completed=tuple(data["completed"]),
+        pending=tuple(data["pending"]),
+        interrupted=data["interrupted"],
+    )
 
 
 __all__ = ["JsonSerializer", "PickleSerializer", "Serializer"]

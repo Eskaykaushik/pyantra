@@ -12,10 +12,10 @@ import copy
 import inspect
 import time
 import uuid
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping, Sequence
 from typing import Generic, cast
 
-from pyantra.checkpoint.base import Checkpoint, CheckpointStore
+from pyantra.checkpoint.base import Checkpoint, CheckpointStore, ParallelProgress
 from pyantra.graph.compiler import CompiledGraph
 from pyantra.graph.node import Node, NodeConfig
 from pyantra.graph.parallel import ParallelEdge
@@ -59,6 +59,7 @@ class Executor(Generic[StateT]):
         self._interrupt_responses = dict(interrupt_responses or {})
 
         resume_at: str | None = None
+        resume_parallel: ParallelProgress | None = None
         events: list[RunEvent] = []
         if checkpointer is not None:
             checkpoint = checkpointer.load(run_id)
@@ -66,6 +67,7 @@ class Executor(Generic[StateT]):
                 state = checkpoint.state
                 events = list(checkpoint.events)
                 resume_at = checkpoint.resume_at
+                resume_parallel = checkpoint.parallel
 
         run = Run[StateT](
             run_id=run_id,
@@ -77,7 +79,7 @@ class Executor(Generic[StateT]):
         self._emit(run, "run.resumed" if resume_at else "run.started")
         try:
             final_state = await self._execute(
-                run, state, max_iterations, checkpointer, resume_at
+                run, state, max_iterations, checkpointer, resume_at, resume_parallel
             )
             run.state = final_state
             run.status = RunStatus.COMPLETED
@@ -102,6 +104,7 @@ class Executor(Generic[StateT]):
         max_iterations: int,
         checkpointer: CheckpointStore[StateT] | None,
         resume_at: str | None,
+        resume_parallel: ParallelProgress | None = None,
     ) -> StateT:
         if not isinstance(state, self._graph.state_type):
             raise GraphExecutionError(
@@ -120,6 +123,11 @@ class Executor(Generic[StateT]):
                     run_id=run.run_id,
                 )
             iterations += 1
+
+            if resume_parallel is not None:
+                current = await self._run_parallel_resume(run, resume_parallel, state)
+                resume_parallel = None
+                continue
 
             if checkpointer is not None:
                 self._checkpoint(checkpointer, run, current, state)
@@ -412,8 +420,16 @@ class Executor(Generic[StateT]):
         mutates its copy and returns it already contains the pre-existing
         content. Every branch result is therefore diffed against ``state``
         (the pristine pre-fan-out snapshot) *before* any merge runs, so only
-        the branch's additions flow through the field reducers and pre-existing
-        reducer state is never re-applied once per branch.
+        the branch's additions flow through the field reducers and
+        pre-existing reducer state is never re-applied once per branch.
+
+        When a branch fails or requests input, the remaining branches are
+        cancelled and awaited before the exception propagates, so no sibling
+        keeps running (or emitting events) after the run has already failed or
+        paused. On an interrupt, the results of already-completed branches are
+        merged into a checkpoint along with the fan-out progress, so a later
+        ``resume()`` re-enters the fan-out at the interrupted branch instead
+        of replaying (and double-billing) completed siblings.
         """
         self._emit(
             run,
@@ -421,20 +437,33 @@ class Executor(Generic[StateT]):
             node=parallel.source,
             message=" || ".join(parallel.targets),
         )
-        results = await asyncio.gather(
-            *(self._run_branch(run, target, state) for target in parallel.targets)
+        tasks = {
+            target: asyncio.create_task(
+                self._run_branch(run, target, state), name=target
+            )
+            for target in parallel.targets
+        }
+        completed, errors = await self._await_branches(run, tasks)
+        merged = self._merge_branch_results(
+            run, state, completed, order=parallel.targets
         )
-        updates: list[tuple[str, StateUpdate]] = []
-        for branch_name, result in results:
-            if result is None:
-                continue
-            if isinstance(result, self._graph.state_type):
-                result = diff_state(state, result, self._graph.reducers)
-            updates.append((branch_name, cast(StateUpdate, result)))
-        merged = state
-        for branch_name, update in updates:
-            merged = self._merge_result(run, branch_name, merged, update)
         run.state = merged
+        first_exc = next((errors[t] for t in parallel.targets if t in errors), None)
+        if first_exc is not None:
+            if isinstance(first_exc, GraphInterrupt):
+                interrupted = next(
+                    (
+                        t
+                        for t in parallel.targets
+                        if isinstance(errors.get(t), GraphInterrupt)
+                    ),
+                    parallel.targets[-1],
+                )
+                self._checkpoint_parallel(
+                    run, parallel.source, parallel.targets, parallel.join,
+                    completed, interrupted,
+                )
+            raise first_exc
         if parallel.join is not None:
             self._emit(
                 run, "edge.selected", node=parallel.source, message=parallel.join
@@ -443,17 +472,170 @@ class Executor(Generic[StateT]):
         self._emit(run, "edge.selected", node=parallel.source, message="END")
         return None
 
+    async def _run_parallel_resume(
+        self,
+        run: Run[StateT],
+        progress: ParallelProgress,
+        state: StateT,
+    ) -> str | None:
+        """Re-enter a fan-out that paused inside a parallel branch.
+
+        Only the branches that had not completed when the run paused
+        (``progress.pending``) are executed; the checkpointed state already
+        holds the merged results of the completed branches, so their side
+        effects are not repeated. Returns the join node name, or ``None`` to
+        end the workflow.
+        """
+        targets = tuple(
+            target for target in progress.targets if target in progress.pending
+        )
+        if not targets:
+            return progress.join
+        self._emit(
+            run,
+            "edge.selected",
+            node=progress.source,
+            message=" || ".join(targets),
+        )
+        tasks = {
+            target: asyncio.create_task(
+                self._run_branch(run, target, state), name=target
+            )
+            for target in targets
+        }
+        completed, errors = await self._await_branches(run, tasks)
+        merged = self._merge_branch_results(run, state, completed, order=targets)
+        run.state = merged
+        first_exc = next((errors[t] for t in targets if t in errors), None)
+        if first_exc is not None:
+            if isinstance(first_exc, GraphInterrupt):
+                interrupted = next(
+                    (t for t in targets if isinstance(errors.get(t), GraphInterrupt)),
+                    targets[-1],
+                )
+                self._checkpoint_parallel(
+                    run,
+                    progress.source,
+                    progress.targets,
+                    progress.join,
+                    completed,
+                    interrupted,
+                    prior=progress,
+                )
+            raise first_exc
+        return progress.join
+
+    async def _await_branches(
+        self,
+        run: Run[StateT],
+        tasks: dict[str, asyncio.Task[StateT | StateUpdate | None]],
+    ) -> tuple[dict[str, StateT | StateUpdate | None], dict[str, BaseException]]:
+        """Await branch tasks, cancelling siblings on the first failure.
+
+        Returns ``(completed, errors)``: the raw results of branches that
+        finished successfully (keyed by branch name) and any exceptions raised
+        by branches. On the first exception the still-running siblings are
+        cancelled and awaited, so no branch keeps executing or emitting events
+        after the run has failed or paused.
+        """
+        pending = set(tasks.values())
+        completed: dict[str, StateT | StateUpdate | None] = {}
+        errors: dict[str, BaseException] = {}
+        while pending:
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_EXCEPTION
+            )
+            for task in done:
+                if task.cancelled():
+                    continue
+                name = task.get_name()
+                exc = task.exception()
+                if exc is not None:
+                    errors[name] = exc
+                else:
+                    completed[name] = task.result()
+            if errors:
+                break
+        if pending:
+            for task in pending:
+                task.cancel()
+            await asyncio.wait(pending, return_when=asyncio.ALL_COMPLETED)
+            for task in pending:
+                if not task.cancelled():
+                    task.exception()
+        return completed, errors
+
+    def _merge_branch_results(
+        self,
+        run: Run[StateT],
+        state: StateT,
+        results: Mapping[str, StateT | StateUpdate | None],
+        order: Sequence[str] | None = None,
+    ) -> StateT:
+        """Merge successful branch results into ``state`` in place.
+
+        Results are diffed against a pristine snapshot of the state the
+        branches received, so reducer deltas are applied once against the
+        surviving base regardless of how many branches mutated their copies.
+        Results are merged in ``order`` (the fan-out target order) so the
+        outcome does not depend on task scheduling.
+        """
+        pristine = copy.deepcopy(state)
+        merged = state
+        for branch_name in order if order is not None else results:
+            result = results.get(branch_name)
+            if result is None:
+                continue
+            if isinstance(result, self._graph.state_type):
+                result = diff_state(pristine, result, self._graph.reducers)
+            merged = self._merge_result(
+                run, branch_name, merged, cast(StateUpdate, result)
+            )
+        return merged
+
+    def _checkpoint_parallel(
+        self,
+        run: Run[StateT],
+        source: str,
+        targets: tuple[str, ...],
+        join: str | None,
+        completed: Mapping[str, object],
+        interrupted: str,
+        *,
+        prior: ParallelProgress | None = None,
+    ) -> None:
+        """Record an in-progress fan-out so a resume skips completed branches."""
+        checkpointer = self._checkpointer
+        if checkpointer is None:
+            return
+        checkpoint = checkpointer.load(run.run_id)
+        if checkpoint is None:
+            return
+        done = set(prior.completed) if prior is not None else set()
+        done.update(completed)
+        assert run.state is not None
+        checkpoint.state = run.state
+        checkpoint.events = list(run.events)
+        checkpoint.parallel = ParallelProgress(
+            source=source,
+            targets=targets,
+            join=join,
+            completed=tuple(t for t in targets if t in done),
+            pending=tuple(t for t in targets if t not in done),
+            interrupted=interrupted,
+        )
+        checkpointer.save(checkpoint)
+
     async def _run_branch(
         self,
         run: Run[StateT],
         target: str,
         state: StateT,
-    ) -> tuple[str, StateT | StateUpdate | None]:
+    ) -> StateT | StateUpdate | None:
         """Execute one parallel branch on an isolated copy of the state."""
         node = self._graph.nodes[target]
         branch_state = copy.deepcopy(state)
-        result = await self._run_node(run, node, branch_state)
-        return target, result
+        return await self._run_node(run, node, branch_state)
 
     def _emit(
         self,

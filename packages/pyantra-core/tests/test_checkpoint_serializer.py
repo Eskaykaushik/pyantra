@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,6 +11,7 @@ import pytest
 from pyantra import (
     Checkpoint,
     JsonSerializer,
+    ParallelProgress,
     PickleSerializer,
     RunEvent,
     SQLiteCheckpointStore,
@@ -65,6 +67,32 @@ def test_json_roundtrips_nested_dataclass_state() -> None:
     assert isinstance(loaded.state.items[0], Metadata)
     assert loaded.events == original.events
     assert loaded.interrupts == [("review", {"question": "ok?"})]
+
+
+def test_json_roundtrips_parallel_progress() -> None:
+    original = _checkpoint(NestedState(value=1))
+    original.parallel = ParallelProgress(
+        source="start",
+        targets=("a", "b"),
+        join="finish",
+        completed=("a",),
+        pending=("b",),
+        interrupted="b",
+    )
+
+    loaded = JsonSerializer().loads(JsonSerializer().dumps(original))
+
+    assert loaded.parallel == original.parallel
+
+
+def test_json_loads_checkpoint_without_parallel_progress() -> None:
+    checkpoint = _checkpoint(NestedState(value=1))
+    body = json.loads(JsonSerializer().dumps(checkpoint).decode("utf-8"))
+    del body["parallel"]
+
+    loaded = JsonSerializer().loads(json.dumps(body).encode("utf-8"))
+
+    assert loaded.parallel is None
 
 
 def test_json_roundtrips_optional_metadata() -> None:

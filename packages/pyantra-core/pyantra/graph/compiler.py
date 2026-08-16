@@ -402,6 +402,15 @@ def validate(graph: Graph[StateT]) -> None:
                 f"Parallel join from {par_edge.source!r} references unknown "
                 f"node {par_edge.join!r}."
             )
+        duplicated_targets = {
+            target for target in par_edge.targets if par_edge.targets.count(target) > 1
+        }
+        if duplicated_targets:
+            raise GraphCompileError(
+                f"Parallel fan-out from {par_edge.source!r} lists duplicate "
+                f"target(s) {', '.join(sorted(duplicated_targets))}; each target "
+                "may appear only once."
+            )
 
     from collections import Counter
 
