@@ -6,9 +6,9 @@ from dataclasses import dataclass
 
 from pyantra import (
     Graph,
+    RunStatus,
     SQLiteCheckpointStore,
     interrupt,
-    RunStatus,
 )
 
 
