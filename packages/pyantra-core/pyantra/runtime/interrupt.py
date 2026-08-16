@@ -8,11 +8,9 @@ saved to the checkpointer with status ``PAUSED`` and the payload surfaced on
 
 from __future__ import annotations
 
-from contextvars import ContextVar
-from dataclasses import dataclass
 from typing import Any
 
-from pyantra.checkpoint.base import CheckpointStore
+from pyantra.runtime.context import run_context
 from pyantra.runtime.errors import PyantraError
 
 
@@ -28,21 +26,6 @@ class GraphInterrupt(BaseException):
         self.payload = payload
 
 
-@dataclass
-class _RunContext:
-    """State the executor publishes so ``interrupt()`` can act on it."""
-
-    run_id: str
-    node: str
-    responses: dict[str, Any]
-    checkpointer: CheckpointStore[Any] | None
-
-
-_run_context: ContextVar[_RunContext | None] = ContextVar(
-    "pyantra_run_context", default=None
-)
-
-
 def interrupt(payload: Any) -> Any:
     """Pause the current run and request input from a human.
 
@@ -53,7 +36,7 @@ def interrupt(payload: Any) -> Any:
 
     Requires a checkpointer so the run can be resumed later.
     """
-    ctx = _run_context.get()
+    ctx = run_context.get()
     if ctx is None:
         raise PyantraError("interrupt() can only be called inside a running node.")
     if ctx.node in ctx.responses:

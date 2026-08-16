@@ -189,9 +189,14 @@ class PickleSerializer(Serializer[StateT]):
 
 
 def _reconstruct_event(data: dict[str, Any]) -> Any:
+    from pyantra.llm.types import Usage
     from pyantra.runtime.run import RunEvent
 
-    return RunEvent(**data)
+    payload = dict(data)
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        payload["usage"] = Usage(**usage)
+    return RunEvent(**payload)
 
 
 __all__ = ["JsonSerializer", "PickleSerializer", "Serializer"]

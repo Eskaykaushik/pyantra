@@ -33,6 +33,7 @@ from pyantra.reliability import (
     non_retryable,
     with_timeout,
 )
+from pyantra.runtime.context import RunContext, run_context
 from pyantra.runtime.errors import (
     CheckpointError,
     CircuitOpenError,
@@ -89,6 +90,7 @@ __all__ = [
     "PyantraError",
     "RetryExhaustedError",
     "Run",
+    "RunContext",
     "RunEvent",
     "RunStatus",
     "SQLiteCheckpointStore",
@@ -104,6 +106,7 @@ __all__ = [
     "is_retryable",
     "json_schema_to_python",
     "non_retryable",
+    "run_context",
     "with_timeout",
 ]
 

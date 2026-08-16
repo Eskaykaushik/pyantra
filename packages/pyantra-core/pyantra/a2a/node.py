@@ -20,8 +20,9 @@ from pyantra.a2a.client import A2aClientProtocol
 from pyantra.a2a.errors import A2aError
 from pyantra.a2a.types import Message, Task, TaskStatus, TextPart
 from pyantra.graph.node import Node, NodeConfig
+from pyantra.runtime.context import run_context
 from pyantra.runtime.errors import GraphCompileError
-from pyantra.runtime.interrupt import _run_context, interrupt
+from pyantra.runtime.interrupt import interrupt
 from pyantra.state.state import StateT, StateUpdate
 from pyantra.tools.base import _field_names
 
@@ -109,7 +110,7 @@ class DelegateNode(Node[StateT]):
         task_id = (
             getattr(state, self._task_id_field, None) if self._task_id_field else None
         )
-        ctx = _run_context.get()
+        ctx = run_context.get()
         response = ctx.responses.pop(self.name, None) if ctx is not None else None
 
         if response is not None:

@@ -1,5 +1,6 @@
-"""Pyantra runtime: run objects, events, and the executor."""
+"""Pyantra runtime: run objects, events, context, and the executor."""
 
+from pyantra.runtime.context import RunContext, run_context
 from pyantra.runtime.errors import (
     GraphCompileError,
     GraphExecutionError,
@@ -18,6 +19,8 @@ __all__ = [
     "NodeExecutionError",
     "PyantraError",
     "Run",
+    "RunContext",
     "RunEvent",
     "RunStatus",
+    "run_context",
 ]
