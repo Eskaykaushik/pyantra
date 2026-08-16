@@ -33,7 +33,7 @@ from pyantra.runtime.errors import (
 )
 from pyantra.runtime.interrupt import GraphInterrupt
 from pyantra.runtime.run import Run, RunEvent, RunStatus
-from pyantra.state.reducers import apply_updates, merge_state
+from pyantra.state.reducers import apply_updates, diff_state, merge_state
 from pyantra.state.state import StateT, StateUpdate
 
 
@@ -407,6 +407,13 @@ class Executor(Generic[StateT]):
 
         Returns the join node name, or ``None`` to end the workflow. A branch
         that returns ``None`` contributes nothing.
+
+        Each branch executes on a deep copy of ``state``, so a branch that
+        mutates its copy and returns it already contains the pre-existing
+        content. Every branch result is therefore diffed against ``state``
+        (the pristine pre-fan-out snapshot) *before* any merge runs, so only
+        the branch's additions flow through the field reducers and pre-existing
+        reducer state is never re-applied once per branch.
         """
         self._emit(
             run,
@@ -417,10 +424,16 @@ class Executor(Generic[StateT]):
         results = await asyncio.gather(
             *(self._run_branch(run, target, state) for target in parallel.targets)
         )
-        merged = state
+        updates: list[tuple[str, StateUpdate]] = []
         for branch_name, result in results:
-            if result is not None:
-                merged = self._merge_result(run, branch_name, merged, result)
+            if result is None:
+                continue
+            if isinstance(result, self._graph.state_type):
+                result = diff_state(state, result, self._graph.reducers)
+            updates.append((branch_name, cast(StateUpdate, result)))
+        merged = state
+        for branch_name, update in updates:
+            merged = self._merge_result(run, branch_name, merged, update)
         run.state = merged
         if parallel.join is not None:
             self._emit(

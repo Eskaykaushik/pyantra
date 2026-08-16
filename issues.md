@@ -2,6 +2,11 @@
 
 ## 1. Parallel fan-out double-counts pre-existing reducer state
 
+**Status:** fixed — `_run_parallel` now diffs each state-typed branch result
+against the pristine pre-fan-out snapshot via `diff_state`
+(`packages/pyantra-core/pyantra/state/reducers.py`) before merging, so reducer
+deltas are applied once against the surviving base.
+
 Parallel branches that mutate their isolated state copy and return it (the
 pattern documented by `test_parallel_branch_mutates_its_own_copy` in
 `packages/pyantra-core/tests/test_parallel.py`) produce corrupted state when
@@ -289,3 +294,255 @@ A run that pauses with a set/tuple in its interrupt payload fails when the
 checkpoint is persisted through a serializing store (SQLite, DBOS), even
 though `_jsonify` exists precisely to make such values portable and
 `MemoryCheckpointStore` (which does not serialize) handles the same run fine.
+
+## 9. Persisted checkpoint traces lose the events that caused the pause or failure
+
+`Executor._checkpoint` (`packages/pyantra-core/pyantra/runtime/executor.py`) saves
+`events=list(run.events)` **before** the next node runs, and the checkpoint is
+never rewritten afterward. `_persist_interrupt` appends the interrupt entry but
+not the events emitted by the failing/pausing attempt. So `node.interrupted`,
+`node.failed`, and `run.paused` never reach the durable checkpoint.
+
+### Repro
+
+```python
+from dataclasses import dataclass
+from pyantra import Graph, MemoryCheckpointStore, interrupt
+
+@dataclass
+class S:
+    x: int = 0
+
+g = Graph(S)
+
+@g.node
+def a(s: S) -> S:
+    interrupt("ask")
+    return s
+
+g.set_entry_point(a)
+store = MemoryCheckpointStore()
+run = g.compile().run(S(), checkpointer=store, run_id="t1")
+
+print([e.event for e in run.events])
+# ['run.started', 'node.started', 'node.interrupted', 'run.paused']
+print([e.event for e in store.load("t1").events])
+# ['run.started']   -- the reason for the pause is gone
+```
+
+### Consequences
+
+A resumed run's event trace (and `run.usage` reconstruction from it) silently
+loses why the run paused or failed, so observability and cost attribution are
+incomplete for any checkpointer-backed resume. The same applies to `node.failed`
+for failed runs.
+
+## 10. Resuming a parallel-branch interrupt replays the whole fan-out and double-bills siblings
+
+`aresume` (`packages/pyantra-core/pyantra/graph/compiler.py`) computes the resume
+node from `checkpoint.interrupts[-1][0]`, but `Executor.arun`
+(`packages/pyantra-core/pyantra/runtime/executor.py`) then re-derives the actual
+start position from `checkpoint.resume_at` — the fan-out **source** node. The
+node chosen by `aresume` is used only as the interrupt-response key. So resuming
+an interrupt raised inside a parallel branch re-runs the source **and every
+branch**, including siblings that already completed.
+
+### Repro
+
+```python
+from dataclasses import dataclass, field
+from pyantra import Graph, MemoryCheckpointStore, interrupt
+
+@dataclass
+class S:
+    out: list[str] = field(default_factory=list)
+    decision: str = ""
+
+calls = {"side_effect": 0}
+store = MemoryCheckpointStore()
+g = Graph(S)
+
+@g.node
+def start(s: S) -> S:
+    return s
+
+@g.node
+def side_effect(s: S) -> dict:
+    calls["side_effect"] += 1
+    return {"out": ["result"]}
+
+@g.node
+def interrupted(s: S) -> dict:
+    decision = interrupt("go?")
+    return {"decision": decision}
+
+g.set_entry_point(start)
+g.add_parallel_edges(start, side_effect, interrupted)
+app = g.compile()
+
+app.run(S(), checkpointer=store, run_id="p1")   # paused; side_effect ran once
+app.resume("p1", "yes", checkpointer=store)     # side_effect runs AGAIN
+```
+
+### Consequences
+
+Distinct mechanism from issue 7, which it overlaps with: `aresume`'s selected
+node never becomes the resume position, so the two can disagree, and completed
+sibling branches re-execute their external side effects (LLM calls, API calls).
+That replay is billed twice. If the fan-out source's outgoing edges were ever
+conditional, the interrupted branch could be skipped entirely and the resume
+value silently dropped, leaving the run paused.
+
+## 11. Duplicate parallel targets are not validated
+
+`Graph.add_parallel_edges` (`packages/pyantra-core/pyantra/graph/graph.py`) and
+`validate` (`packages/pyantra-core/pyantra/graph/compiler.py`) accept the same
+node as multiple fan-out targets. Each target runs its own task on its own
+deep copy, so the branch's result is merged once per occurrence.
+
+### Repro
+
+```python
+from dataclasses import dataclass
+from typing import Annotated
+from pyantra import Graph
+
+@dataclass
+class S:
+    v: Annotated[list[int], lambda c, u: c + u]
+
+g = Graph(S)
+
+@g.node
+def start(s: S) -> S:
+    return s
+
+@g.node
+def leaf(s: S) -> dict:
+    return {"v": [1]}
+
+g.set_entry_point(start)
+g.add_parallel_edges(start, leaf, leaf)   # compiles without error
+run = g.compile().run(S(v=[]))
+print(run.state.v)                        # [1, 1] -- same branch applied twice
+```
+
+### Consequences
+
+A reducer field receives the duplicate branch's update once per occurrence
+(`[1, 1]` instead of `[1]`), silently corrupting state. The duplicate target
+should be rejected at compile time (or documented as an error).
+
+## 12. Non-dataclass state cannot be returned as a fresh instance
+
+`merge_state` (`packages/pyantra-core/pyantra/state/reducers.py`) calls
+`dataclasses.fields(returned)` unconditionally when a node returns the state
+type. For a non-dataclass state type, returning a **new** instance raises
+`TypeError`, which `_merge_result` wraps into `NodeExecutionError` and the run
+fails. Only in-place mutation works, despite the documented contract that "any
+object may act as workflow state".
+
+### Repro
+
+```python
+from pyantra import Graph
+
+class Plain:
+    def __init__(self, x: int = 0) -> None:
+        self.x = x
+
+g = Graph(Plain)
+
+@g.node
+def inc(s: Plain) -> Plain:
+    return Plain(s.x + 1)   # fresh instance, not in-place
+
+g.set_entry_point(inc)
+run = g.compile().run(Plain())
+print(run.status.value)     # failed
+print(run.error)            # "Node 'inc' returned state that failed to merge: ..."
+```
+
+### Consequences
+
+The documented "any object may act as workflow state" path breaks as soon as a
+node constructs a new state object instead of mutating in place — the common
+pattern for immutable or value-style states.
+
+## 13. `Usage.__add__` keeps the first model label
+
+`Usage.__add__` (`packages/pyantra-core/pyantra/llm/types.py`) sets
+`model=self.model or other.model`, so when aggregating usage across calls that
+used different models, the first non-empty model name wins and later models are
+silently dropped from the aggregate.
+
+### Repro
+
+```python
+from pyantra import Usage
+
+a = Usage(input_tokens=10, model="mock-a")
+b = Usage(input_tokens=10, model="mock-b")
+print((a + b).model)   # "mock-a" -- the mixed aggregate is mislabeled
+```
+
+### Consequences
+
+Per-run cost attribution (and any report keyed off `Run.usage.model`) is wrong
+for heterogeneous runs; the summed `cost` cannot be matched to its model.
+
+## 14. A2A client leaks raw stdlib network errors
+
+`A2aClient._post` and `_get_json` (`packages/pyantra-core/pyantra/a2a/client.py`)
+wrap `urllib.error.HTTPError` into `A2aError` but leave `urllib.error.URLError`,
+`TimeoutError`, and `OSError` (DNS failure, connection refused, socket timeout)
+uncaught.
+
+### Consequences
+
+`DelegateNode` and callers observe raw stdlib exceptions instead of the
+documented `A2aError` contract, so failure handling in nodes and retry policies
+cannot reliably key on `A2aError`.
+
+## 15. `pyantra-guard` `typecheck` crashes on `Literal` types
+
+`typecheck` (`packages/pyantra-guard/pyantra_guard/typeguard.py`) falls through
+to `isinstance(value, origin)` for any origin it does not special-case. For
+`typing.Literal[...]` (and other non-type origins) `isinstance` raises a
+`TypeError` instead of returning a verdict — a crash path distinct from issue 5's
+bare-generic unpacking.
+
+### Repro
+
+```python
+from typing import Literal
+from pyantra_guard.typeguard import typecheck
+
+typecheck("a", Literal["a", "b"])
+# TypeError: typing.Literal cannot be used with isinstance()
+```
+
+### Consequences
+
+A state field annotated with a `Literal` type makes `check_state`/`assert_state`
+raise a crash instead of validating the value.
+
+## 16. `PIIRedactor.redact_value` misses PII in dict keys
+
+`PIIRedactor.redact_value` (`packages/pyantra-guard/pyantra_guard/redaction.py`)
+redacts string **values** recursively but leaves dict **keys** untouched.
+
+### Repro
+
+```python
+from pyantra_guard import redact_value
+
+redact_value({"user@example.com": "call 555-0100"})
+# {'user@example.com': 'call <phone>'}   -- the email key is still raw
+```
+
+### Consequences
+
+PII that appears as a dict key (e.g. an email or IP used as a lookup key in
+state, interrupt payloads, or tool output) survives redaction and leaks into
+redacted traces.

@@ -23,7 +23,7 @@ Pyantra is a Python framework for building AI agent workflows as **typed graphs 
 - **Typed workflows** — nodes flow state through the graph and are type-checked end to end.
 - **State merging** — per-field reducers (`Annotated[list[T], reducer]`) and partial updates, so concurrent and sequential nodes can contribute to shared state safely.
 - **Compile-time validation** — malformed graphs fail early with clear errors, not at runtime.
-- **Parallel fan-out** — nodes run concurrently on isolated state copies and merge back with reducers.
+- **Parallel fan-out** — nodes run concurrently on isolated state copies; in-place branch mutations merge back as deltas, so pre-existing reducer state is never double-counted.
 - **Reliability first-class** — per-node retry with backoff, timeouts, and circuit breakers.
 - **Checkpoints** — durable snapshots that let failed runs resume where they left off, backed by memory or SQLite.
 - **Human-in-the-loop** — `interrupt()` pauses a run for input; `resume()` continues it.

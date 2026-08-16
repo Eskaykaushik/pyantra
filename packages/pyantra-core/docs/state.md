@@ -17,6 +17,11 @@ A node can return three things:
 | the state type | Merged field by field: annotated fields are reduced, others are replaced. |
 | `dict[str, Any]` | The same merge, applied per key. Unknown keys raise `KeyError`. |
 
+In [parallel fan-out](parallel.md), a branch that mutates its isolated copy and
+returns it is merged as a **delta**: the executor diffs the copy against the
+pre-fan-out state, so a reducer field's pre-existing content is never
+re-applied — even with non-idempotent reducers like `operator.add`.
+
 ## Annotating fields with reducers
 
 Use `typing.Annotated` to attach a reducer to a field. Any callable

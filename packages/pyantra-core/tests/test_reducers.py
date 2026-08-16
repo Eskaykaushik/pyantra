@@ -7,7 +7,12 @@ from dataclasses import dataclass, field
 from typing import Annotated
 
 from pyantra import Graph, NodeExecutionError, RunStatus
-from pyantra.state.reducers import apply_updates, extract_reducers, merge_state
+from pyantra.state.reducers import (
+    apply_updates,
+    diff_state,
+    extract_reducers,
+    merge_state,
+)
 
 
 @dataclass
@@ -72,6 +77,52 @@ def test_merge_state_identity_means_in_place() -> None:
     reducers = extract_reducers(ReducibleState)
     merged = merge_state(current, current, reducers)
     assert merged.messages == ["a"]
+
+
+def test_diff_state_strips_base_prefix_from_reducer_field() -> None:
+    snapshot = ReducibleState(messages=["base"])
+    returned = ReducibleState(messages=["base", "a"])
+    reducers = extract_reducers(ReducibleState)
+    assert diff_state(snapshot, returned, reducers) == {
+        "value": 0,
+        "messages": ["a"],
+        "tags": set(),
+    }
+
+
+def test_diff_state_rebind_matches_prefix() -> None:
+    snapshot = ReducibleState(messages=["base"])
+    returned = ReducibleState(messages=["base", "a", "b"])
+    reducers = extract_reducers(ReducibleState)
+    assert diff_state(snapshot, returned, reducers)["messages"] == ["a", "b"]
+
+
+def test_diff_state_non_prefix_value_is_whole_delta() -> None:
+    snapshot = ReducibleState(messages=["base"])
+    returned = ReducibleState(messages=["a"])
+    reducers = extract_reducers(ReducibleState)
+    assert diff_state(snapshot, returned, reducers)["messages"] == ["a"]
+
+
+def test_diff_state_passes_non_reducer_fields_whole() -> None:
+    snapshot = ReducibleState(value=1)
+    returned = ReducibleState(value=9, messages=["a"])
+    reducers = extract_reducers(ReducibleState)
+    updates = diff_state(snapshot, returned, reducers)
+    assert updates["value"] == 9
+    assert updates["messages"] == ["a"]
+
+
+def test_diff_state_delta_feeds_apply_updates() -> None:
+    snapshot = ReducibleState(messages=["base"])
+    returned = ReducibleState(messages=["base", "a"])
+    reducers = extract_reducers(ReducibleState)
+    merged = apply_updates(
+        ReducibleState(messages=["base"]),
+        diff_state(snapshot, returned, reducers),
+        reducers,
+    )
+    assert merged.messages == ["base", "a"]
 
 
 def test_node_partial_update_dict() -> None:

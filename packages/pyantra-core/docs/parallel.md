@@ -56,6 +56,36 @@ def search_docs(state: State) -> dict[str, list[str]]:
 With `operator.add` as the reducer, both results land in `state.answers`.
 Without it, only one would survive.
 
+## Deltas, not full state
+
+A branch may also **mutate its isolated copy in place and return it** instead of
+building an update dict:
+
+```python
+@graph.node
+def search_web(state: State) -> State:
+    state.answers.append("web result")
+    return state
+```
+
+Pyantra diffs each branch's return against the state it received at the fan-out
+point, so only the branch's *additions* flow through the reducer. Pre-existing
+reducer state is never re-applied, even when the reducer is a plain
+non-idempotent function like `operator.add`:
+
+```python
+state = State(answers=["existing"])   # fan out from here
+# branch 1 appends "web result", branch 2 appends "db result"
+result.state.answers == ["existing", "web result", "db result"]
+```
+
+Naively merging a mutated copy with `current + value` would re-append the
+pre-existing content once per branch. Pyantra avoids that by treating the
+returned copy as a delta against the pre-fan-out snapshot. This works for the
+canonical list/`operator.add`, set/`operator.or_`, and dict/`merge_dicts`
+reducers; for a custom non-invertible reducer, the branch's value is used as
+the update in full.
+
 ## Full example
 
 ```python

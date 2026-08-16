@@ -119,6 +119,58 @@ def merge_state(
     return state
 
 
+def diff_state(
+    snapshot: S,
+    returned: Any,
+    reducers: Mapping[str, Reducer] | None = None,
+) -> dict[str, Any]:
+    """Convert a state-typed branch result into per-field update deltas.
+
+    Parallel branches execute on an isolated deep copy of the pre-fan-out
+    state, so a branch that mutates its copy and returns it yields values that
+    already contain the pre-existing content. Merging those through
+    ``merge_state`` would run ``reducer(current, value)`` on the full value and
+    re-apply the base once per branch. This helper strips the base out so the
+    merge treats each branch's return as a pure update:
+
+    * reducer fields — diffed against ``snapshot`` (the state the branch
+      received); list fields that extend the snapshot are reduced to the suffix
+      that was added.
+    * unannotated fields — passed through whole (last-writer-wins).
+
+    The extracted deltas feed straight into :func:`apply_updates`.
+    """
+    reducers = reducers or {}
+    updates: dict[str, Any] = {}
+    for field in dataclasses.fields(returned):
+        name = field.name
+        value = getattr(returned, name)
+        if name in reducers:
+            value = _reducer_delta(getattr(snapshot, name), value)
+        updates[name] = value
+    return updates
+
+
+def _reducer_delta(current: Any, value: Any) -> Any:
+    """Reduce ``value`` to the delta it added on top of ``current``.
+
+    For list fields where the returned value extends the snapshot in place
+    (``append``, ``extend``, ``+=``), the base is a prefix of the value and is
+    dropped so only the addition survives the reducer. Any other value is
+    treated as the branch's contribution in full — safe for idempotent
+    reducers (``operator.or_``, :func:`merge_dicts`) and the fallback for
+    non-invertible custom reducers.
+    """
+    if (
+        isinstance(current, list)
+        and isinstance(value, list)
+        and len(value) >= len(current)
+        and value[: len(current)] == current
+    ):
+        return value[len(current) :]
+    return value
+
+
 def _field_names(state: Any) -> frozenset[str] | None:
     """Field names of a dataclass instance, or None for other types."""
     if dataclasses.is_dataclass(state):
@@ -130,6 +182,7 @@ __all__ = [
     "Reducer",
     "add",
     "apply_updates",
+    "diff_state",
     "extract_reducers",
     "merge_dicts",
     "merge_state",

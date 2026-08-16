@@ -11,6 +11,7 @@ from typing import Annotated
 import pytest
 
 from pyantra import END, Graph, GraphCompileError, RunStatus
+from pyantra.state.reducers import merge_dicts
 
 
 @dataclass
@@ -128,6 +129,145 @@ def test_parallel_branch_mutates_its_own_copy() -> None:
     assert result.status == RunStatus.COMPLETED
     # in-place mutations of isolated copies are merged back through reducers
     assert sorted(result.state.results) == ["a", "b"]
+
+
+def test_parallel_in_place_copy_preserves_base_reducer_state() -> None:
+    graph = Graph(PState)
+
+    @graph.node
+    def start(state: PState) -> PState:
+        return state
+
+    @graph.node
+    def branch_a(state: PState) -> PState:
+        state.results.append("a")
+        return state
+
+    @graph.node
+    def branch_b(state: PState) -> PState:
+        state.results.append("b")
+        return state
+
+    graph.set_entry_point(start)
+    graph.add_parallel_edges(start, branch_a, branch_b)
+
+    result = graph.compile().run(PState(results=["base"]))
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.state is not None
+    # pre-existing reducer state must not be re-appended once per branch
+    assert result.state.results == ["base", "a", "b"]
+
+
+def test_parallel_branch_can_read_base_reducer_state() -> None:
+    graph = Graph(PState)
+
+    @graph.node
+    def start(state: PState) -> PState:
+        return state
+
+    @graph.node
+    def branch_a(state: PState) -> PState:
+        if "a" not in state.results:
+            state.results.append("a")
+        return state
+
+    @graph.node
+    def branch_b(state: PState) -> PState:
+        state.results.append("b")
+        return state
+
+    graph.set_entry_point(start)
+    graph.add_parallel_edges(start, branch_a, branch_b)
+
+    result = graph.compile().run(PState(results=["base"]))
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.state is not None
+    # the branch saw the base content and still contributed only its delta
+    assert result.state.results == ["base", "a", "b"]
+
+
+def test_parallel_fresh_state_object_merges_as_delta() -> None:
+    graph = Graph(PState)
+
+    @graph.node
+    def start(state: PState) -> PState:
+        return state
+
+    @graph.node
+    def branch_a(state: PState) -> PState:
+        return PState(results=["a"])
+
+    @graph.node
+    def branch_b(state: PState) -> PState:
+        return PState(results=["b"])
+
+    graph.set_entry_point(start)
+    graph.add_parallel_edges(start, branch_a, branch_b)
+
+    result = graph.compile().run(PState(results=["base"]))
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.state is not None
+    assert result.state.results == ["base", "a", "b"]
+
+
+def test_parallel_dict_reducer_with_base_state() -> None:
+    @dataclass
+    class DictState:
+        meta: Annotated[dict[str, str], merge_dicts] = field(default_factory=dict)
+
+    graph = Graph(DictState)
+
+    @graph.node
+    def start(state: DictState) -> DictState:
+        return state
+
+    @graph.node
+    def branch_a(state: DictState) -> DictState:
+        state.meta["a"] = "1"
+        return state
+
+    @graph.node
+    def branch_b(state: DictState) -> DictState:
+        state.meta["b"] = "2"
+        return state
+
+    graph.set_entry_point(start)
+    graph.add_parallel_edges(start, branch_a, branch_b)
+
+    result = graph.compile().run(DictState(meta={"base": "0"}))
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.state is not None
+    assert result.state.meta == {"base": "0", "a": "1", "b": "2"}
+
+
+def test_parallel_set_reducer_with_base_state() -> None:
+    @dataclass
+    class SetState:
+        tags: Annotated[set[str], operator.or_] = field(default_factory=set)
+
+    graph = Graph(SetState)
+
+    @graph.node
+    def start(state: SetState) -> SetState:
+        return state
+
+    @graph.node
+    def branch_a(state: SetState) -> SetState:
+        state.tags.add("a")
+        return state
+
+    graph.set_entry_point(start)
+    graph.add_parallel_edges(start, branch_a)
+
+    result = graph.compile().run(SetState(tags={"base"}))
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.state is not None
+    assert result.state.tags == {"base", "a"}
 
 
 def test_parallel_unreduced_field_is_last_writer_wins() -> None:
