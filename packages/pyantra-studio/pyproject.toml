@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pyantra-studio"
-version = "0.5.0"
+version = "0.5.1"
 description = "Local development server and visual web debugger for Pyantra."
 readme = "README.md"
 requires-python = ">=3.10"
