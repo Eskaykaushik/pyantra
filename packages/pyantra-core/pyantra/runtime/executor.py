@@ -91,9 +91,23 @@ class Executor(Generic[StateT]):
             run.interrupt = exc.payload
             self._emit(run, "run.paused", message=str(exc.payload))
         except Exception as exc:
+            # Record failure status and emit the failing event, then persist
+            # the current run.events into the checkpointer so the durable
+            # checkpoint includes the events that explain the failure.
             run.status = RunStatus.FAILED
             run.error = str(exc)
             run.exception = exc
+            # Best-effort: persist the run's event trace so checkpoints include
+            # node.failed / run.failed entries that explain why the run failed.
+            if checkpointer is not None:
+                try:
+                    cp = checkpointer.load(run.run_id)
+                    if cp is not None:
+                        cp.events = list(run.events)
+                        checkpointer.save(cp)
+                except Exception:
+                    # Do not mask the original exception if checkpoint save fails
+                    pass
             self._emit(run, "run.failed", message=run.error)
         return run
 
@@ -220,6 +234,9 @@ class Executor(Generic[StateT]):
         if checkpoint is None:
             return
         checkpoint.interrupts.append((node_name, payload))
+        # Persist the run events so the checkpointed trace contains the
+        # node.interrupted / run.paused events that explain the pause.
+        checkpoint.events = list(run.events)
         checkpointer.save(checkpoint)
 
     async def _invoke_with_policy(
@@ -425,8 +442,8 @@ class Executor(Generic[StateT]):
 
         When a branch fails or requests input, the remaining branches are
         cancelled and awaited before the exception propagates, so no sibling
-        keeps running (or emitting events) after the run has already failed or
-        paused. On an interrupt, the results of already-completed branches are
+        keeps running (or emitting events) after the run has failed or paused.
+        On an interrupt, the results of already-completed branches are
         merged into a checkpoint along with the fan-out progress, so a later
         ``resume()`` re-enters the fan-out at the interrupted branch instead
         of replaying (and double-billing) completed siblings.
