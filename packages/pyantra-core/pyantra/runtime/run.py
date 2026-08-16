@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Generic
 
+from pyantra.llm.types import Usage
 from pyantra.state.state import StateT
 
 
@@ -30,6 +31,7 @@ class RunEvent:
     node: str | None = None
     duration_ms: float | None = None
     message: str | None = None
+    usage: Usage | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -39,6 +41,7 @@ class RunEvent:
             "node": self.node,
             "duration_ms": self.duration_ms,
             "message": self.message,
+            "usage": _usage_to_dict(self.usage) if self.usage is not None else None,
         }
 
 
@@ -58,6 +61,7 @@ class Run(Generic[StateT]):
     error: str | None = None
     exception: BaseException | None = None
     interrupt: Any = None
+    usage: Usage = field(default_factory=Usage)
 
     @property
     def node_events(self) -> list[RunEvent]:
@@ -72,4 +76,16 @@ class Run(Generic[StateT]):
             "events": [event.to_dict() for event in self.events],
             "error": self.error,
             "interrupt": self.interrupt,
+            "usage": _usage_to_dict(self.usage),
         }
+
+
+def _usage_to_dict(usage: Usage) -> dict[str, object]:
+    """Serialize a :class:`~pyantra.llm.types.Usage` for JSON-friendly output."""
+    return {
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_tokens": usage.cache_tokens,
+        "cost": usage.cost,
+        "model": usage.model,
+    }

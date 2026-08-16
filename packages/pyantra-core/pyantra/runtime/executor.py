@@ -19,8 +19,10 @@ from pyantra.checkpoint.base import Checkpoint, CheckpointStore
 from pyantra.graph.compiler import CompiledGraph
 from pyantra.graph.node import Node, NodeConfig
 from pyantra.graph.parallel import ParallelEdge
+from pyantra.llm.types import Usage
 from pyantra.reliability.retry import compute_delay, is_retryable
 from pyantra.reliability.timeout import with_timeout
+from pyantra.runtime.context import RunContext, run_context
 from pyantra.runtime.errors import (
     GraphExecutionError,
     InvalidRouteError,
@@ -29,7 +31,7 @@ from pyantra.runtime.errors import (
     NodeTimeoutError,
     RetryExhaustedError,
 )
-from pyantra.runtime.interrupt import GraphInterrupt, _run_context, _RunContext
+from pyantra.runtime.interrupt import GraphInterrupt
 from pyantra.runtime.run import Run, RunEvent, RunStatus
 from pyantra.state.reducers import apply_updates, merge_state
 from pyantra.state.state import StateT, StateUpdate
@@ -71,6 +73,7 @@ class Executor(Generic[StateT]):
             state=state,
             events=events,
         )
+        run.usage = _sum_usage(run.events)
         self._emit(run, "run.resumed" if resume_at else "run.started")
         try:
             final_state = await self._execute(
@@ -143,12 +146,13 @@ class Executor(Generic[StateT]):
         """
         self._emit(run, "node.started", node=node.name)
         started = time.perf_counter()
-        token = _run_context.set(
-            _RunContext(
+        token = run_context.set(
+            RunContext[StateT](
                 run_id=run.run_id,
                 node=node.name,
                 responses=self._interrupt_responses,
                 checkpointer=self._checkpointer,
+                _run=run,
             )
         )
         try:
@@ -185,7 +189,7 @@ class Executor(Generic[StateT]):
                 exc.node = node.name
             raise
         finally:
-            _run_context.reset(token)
+            run_context.reset(token)
         self._emit(
             run,
             "node.completed",
@@ -231,15 +235,15 @@ class Executor(Generic[StateT]):
                     )
                 else:
                     result = await self._invoke_node(node, state)
-            except asyncio.TimeoutError as exc:
-                last_exc = exc
+            except (asyncio.TimeoutError, TimeoutError) as exc:
+                last_exc = TimeoutError(str(exc))
                 self._emit(
                     run,
                     "node.attempt.timeout",
                     node=node.name,
                     message=f"Timeout after {config.timeout}s",
                 )
-                if not _should_retry(config, exc):
+                if not _should_retry(config, last_exc):
                     break
             except Exception as exc:
                 last_exc = exc
@@ -272,7 +276,7 @@ class Executor(Generic[StateT]):
         if breaker is not None:
             breaker.record_failure()
 
-        if isinstance(last_exc, asyncio.TimeoutError):
+        if isinstance(last_exc, TimeoutError):
             raise NodeTimeoutError(
                 f"Node {node.name!r} exceeded timeout of {config.timeout}s.",
                 run_id=run.run_id,
@@ -481,3 +485,12 @@ def _should_retry(config: NodeConfig, exc: BaseException) -> bool:
 
 def _duration_ms(started: float) -> float:
     return (time.perf_counter() - started) * 1000
+
+
+def _sum_usage(events: list[RunEvent]) -> Usage:
+    """Aggregate the usage carried by a run's events (e.g. after a resume)."""
+    total = Usage()
+    for event in events:
+        if event.usage is not None:
+            total = total + event.usage
+    return total
