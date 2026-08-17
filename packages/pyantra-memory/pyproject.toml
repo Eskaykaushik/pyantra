@@ -9,7 +9,12 @@ description = "Vector stores, RAG, and caching for Pyantra."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = []
+dependencies = ["pyantra>=0.5.1"]
+
+[project.optional-dependencies]
+qdrant = ["qdrant-client>=1.9"]
+all = ["qdrant-client>=1.9"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["pyantra_memory"]
+include = ["pyantra_memory/py.typed"]

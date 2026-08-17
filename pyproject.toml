@@ -30,7 +30,7 @@ dev = [
 target-version = "py310"
 line-length = 88
 include = ["*.py", "*.pyi"]
-src = ["packages/pyantra-core", "packages/pyantra-eval"]
+src = ["packages/pyantra-core", "packages/pyantra-eval", "packages/pyantra-memory"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
@@ -52,10 +52,15 @@ ignore_missing_imports = true
 module = ["sqlalchemy", "sqlalchemy.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["qdrant_client", "qdrant_client.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = [
     "packages/pyantra-core/tests",
     "packages/pyantra-guard/tests",
     "packages/pyantra-eval/tests",
+    "packages/pyantra-memory/tests",
 ]
